@@ -1,0 +1,582 @@
+[
+  {
+    "clip_id": "clip_01_bounce_clean_perfect",
+    "passed": true,
+    "coverage_ratio": 1.0,
+    "foot_scoring_status": "available",
+    "mean_offset_ms": 8.0,
+    "good_or_better_ratio": 1.0,
+    "shape_score": 99.46,
+    "groove_score": 100.0,
+    "worst_beat": {
+      "count_number": 2,
+      "offset_ms": 8.16,
+      "judgment": "Perfect"
+    },
+    "worst_joints": [
+      {
+        "joint": "knees",
+        "mean_angle_error_deg": 0.76
+      },
+      {
+        "joint": "spine",
+        "mean_angle_error_deg": 0.03
+      },
+      {
+        "joint": "hips",
+        "mean_angle_error_deg": 0.01
+      }
+    ]
+  },
+  {
+    "clip_id": "clip_02_bounce_clean_tilted_phone_22deg",
+    "passed": true,
+    "coverage_ratio": 1.0,
+    "foot_scoring_status": "available",
+    "mean_offset_ms": 12.0,
+    "good_or_better_ratio": 1.0,
+    "shape_score": 99.91,
+    "groove_score": 100.0,
+    "worst_beat": {
+      "count_number": 2,
+      "offset_ms": 12.17,
+      "judgment": "Perfect"
+    },
+    "worst_joints": [
+      {
+        "joint": "knees",
+        "mean_angle_error_deg": 0.08
+      },
+      {
+        "joint": "spine",
+        "mean_angle_error_deg": 0.04
+      },
+      {
+        "joint": "left_foot",
+        "mean_angle_error_deg": 0.02
+      }
+    ]
+  },
+  {
+    "clip_id": "clip_03_bounce_clean_mirrored_tall",
+    "passed": true,
+    "coverage_ratio": 1.0,
+    "foot_scoring_status": "available",
+    "mean_offset_ms": -10.0,
+    "good_or_better_ratio": 1.0,
+    "shape_score": 99.92,
+    "groove_score": 100.0,
+    "worst_beat": {
+      "count_number": 3,
+      "offset_ms": -10.14,
+      "judgment": "Perfect"
+    },
+    "worst_joints": [
+      {
+        "joint": "knees",
+        "mean_angle_error_deg": 0.07
+      },
+      {
+        "joint": "spine",
+        "mean_angle_error_deg": 0.03
+      },
+      {
+        "joint": "left_foot",
+        "mean_angle_error_deg": 0.02
+      }
+    ]
+  },
+  {
+    "clip_id": "clip_04_bounce_good_plus_85ms",
+    "passed": true,
+    "coverage_ratio": 1.0,
+    "foot_scoring_status": "available",
+    "mean_offset_ms": 85.01,
+    "good_or_better_ratio": 1.0,
+    "shape_score": 99.45,
+    "groove_score": 100.0,
+    "worst_beat": {
+      "count_number": 7,
+      "offset_ms": 85.16,
+      "judgment": "Good"
+    },
+    "worst_joints": [
+      {
+        "joint": "knees",
+        "mean_angle_error_deg": 0.76
+      },
+      {
+        "joint": "spine",
+        "mean_angle_error_deg": 0.04
+      },
+      {
+        "joint": "left_foot",
+        "mean_angle_error_deg": 0.02
+      }
+    ]
+  },
+  {
+    "clip_id": "clip_05_bounce_good_minus_75ms",
+    "passed": true,
+    "coverage_ratio": 1.0,
+    "foot_scoring_status": "available",
+    "mean_offset_ms": -75.0,
+    "good_or_better_ratio": 1.0,
+    "shape_score": 99.46,
+    "groove_score": 100.0,
+    "worst_beat": {
+      "count_number": 8,
+      "offset_ms": -75.12,
+      "judgment": "Good"
+    },
+    "worst_joints": [
+      {
+        "joint": "knees",
+        "mean_angle_error_deg": 0.76
+      },
+      {
+        "joint": "spine",
+        "mean_angle_error_deg": 0.03
+      },
+      {
+        "joint": "hips",
+        "mean_angle_error_deg": 0.01
+      }
+    ]
+  },
+  {
+    "clip_id": "clip_06_bounce_audio_latency_calibrated",
+    "passed": true,
+    "coverage_ratio": 1.0,
+    "foot_scoring_status": "available",
+    "mean_offset_ms": 10.01,
+    "good_or_better_ratio": 1.0,
+    "shape_score": 99.93,
+    "groove_score": 100.0,
+    "worst_beat": {
+      "count_number": 2,
+      "offset_ms": 10.13,
+      "judgment": "Perfect"
+    },
+    "worst_joints": [
+      {
+        "joint": "knees",
+        "mean_angle_error_deg": 0.06
+      },
+      {
+        "joint": "spine",
+        "mean_angle_error_deg": 0.03
+      },
+      {
+        "joint": "hips",
+        "mean_angle_error_deg": 0.01
+      }
+    ]
+  },
+  {
+    "clip_id": "clip_07_bounce_late_145ms",
+    "passed": false,
+    "coverage_ratio": 1.0,
+    "foot_scoring_status": "available",
+    "mean_offset_ms": 145.01,
+    "good_or_better_ratio": 0.0,
+    "shape_score": 99.91,
+    "groove_score": 100.0,
+    "worst_beat": {
+      "count_number": 2,
+      "offset_ms": 145.17,
+      "judgment": "Late"
+    },
+    "worst_joints": [
+      {
+        "joint": "knees",
+        "mean_angle_error_deg": 0.08
+      },
+      {
+        "joint": "spine",
+        "mean_angle_error_deg": 0.04
+      },
+      {
+        "joint": "left_foot",
+        "mean_angle_error_deg": 0.02
+      }
+    ]
+  },
+  {
+    "clip_id": "clip_08_bounce_early_150ms",
+    "passed": false,
+    "coverage_ratio": 1.0,
+    "foot_scoring_status": "available",
+    "mean_offset_ms": -149.99,
+    "good_or_better_ratio": 0.0,
+    "shape_score": 99.9,
+    "groove_score": 100.0,
+    "worst_beat": {
+      "count_number": 3,
+      "offset_ms": -150.18,
+      "judgment": "Early"
+    },
+    "worst_joints": [
+      {
+        "joint": "knees",
+        "mean_angle_error_deg": 0.09
+      },
+      {
+        "joint": "spine",
+        "mean_angle_error_deg": 0.04
+      },
+      {
+        "joint": "left_foot",
+        "mean_angle_error_deg": 0.02
+      }
+    ]
+  },
+  {
+    "clip_id": "clip_09_bounce_stiff_locked_knees",
+    "passed": false,
+    "coverage_ratio": 1.0,
+    "foot_scoring_status": "available",
+    "mean_offset_ms": 5.0,
+    "good_or_better_ratio": 1.0,
+    "shape_score": 82.93,
+    "groove_score": 18.33,
+    "worst_beat": {
+      "count_number": 2,
+      "offset_ms": 5.1,
+      "judgment": "Perfect"
+    },
+    "worst_joints": [
+      {
+        "joint": "knees",
+        "mean_angle_error_deg": 19.02
+      },
+      {
+        "joint": "spine",
+        "mean_angle_error_deg": 6.52
+      },
+      {
+        "joint": "hips",
+        "mean_angle_error_deg": 2.28
+      }
+    ]
+  },
+  {
+    "clip_id": "clip_10_bounce_stiff_jerky_robot",
+    "passed": false,
+    "coverage_ratio": 1.0,
+    "foot_scoring_status": "available",
+    "mean_offset_ms": -100.75,
+    "good_or_better_ratio": 1.0,
+    "shape_score": 84.46,
+    "groove_score": 36.66,
+    "worst_beat": {
+      "count_number": 1,
+      "offset_ms": -116.66,
+      "judgment": "Good"
+    },
+    "worst_joints": [
+      {
+        "joint": "knees",
+        "mean_angle_error_deg": 13.3
+      },
+      {
+        "joint": "spine",
+        "mean_angle_error_deg": 6.79
+      },
+      {
+        "joint": "left_foot",
+        "mean_angle_error_deg": 3.17
+      }
+    ]
+  },
+  {
+    "clip_id": "clip_11_bounce_low_coverage_occluded_feet",
+    "passed": false,
+    "coverage_ratio": 0.5,
+    "foot_scoring_status": "unavailable",
+    "mean_offset_ms": 5.0,
+    "good_or_better_ratio": 1.0,
+    "shape_score": 99.95,
+    "groove_score": 100.0,
+    "worst_beat": {
+      "count_number": 2,
+      "offset_ms": 5.1,
+      "judgment": "Perfect"
+    },
+    "worst_joints": [
+      {
+        "joint": "knees",
+        "mean_angle_error_deg": 0.05
+      },
+      {
+        "joint": "spine",
+        "mean_angle_error_deg": 0.02
+      },
+      {
+        "joint": "hips",
+        "mean_angle_error_deg": 0.01
+      }
+    ]
+  },
+  {
+    "clip_id": "clip_12_bounce_wrong_move_static",
+    "passed": false,
+    "coverage_ratio": 1.0,
+    "foot_scoring_status": "available",
+    "mean_offset_ms": 999.0,
+    "good_or_better_ratio": 0.0,
+    "shape_score": 60.31,
+    "groove_score": 0.0,
+    "worst_beat": {
+      "count_number": 1,
+      "offset_ms": 999.0,
+      "judgment": "Miss"
+    },
+    "worst_joints": [
+      {
+        "joint": "knees",
+        "mean_angle_error_deg": 27.96
+      },
+      {
+        "joint": "spine",
+        "mean_angle_error_deg": 9.97
+      },
+      {
+        "joint": "hips",
+        "mean_angle_error_deg": 7.19
+      }
+    ]
+  },
+  {
+    "clip_id": "clip_13_jack_clean_perfect",
+    "passed": true,
+    "coverage_ratio": 1.0,
+    "foot_scoring_status": "available",
+    "mean_offset_ms": 10.0,
+    "good_or_better_ratio": 1.0,
+    "shape_score": 99.84,
+    "groove_score": 100.0,
+    "worst_beat": {
+      "count_number": 6,
+      "offset_ms": 10.17,
+      "judgment": "Perfect"
+    },
+    "worst_joints": [
+      {
+        "joint": "left_foot",
+        "mean_angle_error_deg": 0.1
+      },
+      {
+        "joint": "right_foot",
+        "mean_angle_error_deg": 0.1
+      },
+      {
+        "joint": "knees",
+        "mean_angle_error_deg": 0.07
+      }
+    ]
+  },
+  {
+    "clip_id": "clip_14_jack_clean_tilted_phone_18deg",
+    "passed": true,
+    "coverage_ratio": 1.0,
+    "foot_scoring_status": "available",
+    "mean_offset_ms": -8.0,
+    "good_or_better_ratio": 1.0,
+    "shape_score": 99.85,
+    "groove_score": 100.0,
+    "worst_beat": {
+      "count_number": 7,
+      "offset_ms": -8.13,
+      "judgment": "Perfect"
+    },
+    "worst_joints": [
+      {
+        "joint": "left_foot",
+        "mean_angle_error_deg": 0.1
+      },
+      {
+        "joint": "right_foot",
+        "mean_angle_error_deg": 0.1
+      },
+      {
+        "joint": "knees",
+        "mean_angle_error_deg": 0.07
+      }
+    ]
+  },
+  {
+    "clip_id": "clip_15_jack_good_plus_90ms",
+    "passed": true,
+    "coverage_ratio": 1.0,
+    "foot_scoring_status": "available",
+    "mean_offset_ms": 90.0,
+    "good_or_better_ratio": 1.0,
+    "shape_score": 98.83,
+    "groove_score": 100.0,
+    "worst_beat": {
+      "count_number": 2,
+      "offset_ms": 90.13,
+      "judgment": "Good"
+    },
+    "worst_joints": [
+      {
+        "joint": "knees",
+        "mean_angle_error_deg": 0.73
+      },
+      {
+        "joint": "spine",
+        "mean_angle_error_deg": 0.63
+      },
+      {
+        "joint": "left_foot",
+        "mean_angle_error_deg": 0.39
+      }
+    ]
+  },
+  {
+    "clip_id": "clip_16_jack_late_160ms",
+    "passed": false,
+    "coverage_ratio": 1.0,
+    "foot_scoring_status": "available",
+    "mean_offset_ms": 160.0,
+    "good_or_better_ratio": 0.0,
+    "shape_score": 99.87,
+    "groove_score": 100.0,
+    "worst_beat": {
+      "count_number": 5,
+      "offset_ms": 160.1,
+      "judgment": "Late"
+    },
+    "worst_joints": [
+      {
+        "joint": "left_foot",
+        "mean_angle_error_deg": 0.08
+      },
+      {
+        "joint": "right_foot",
+        "mean_angle_error_deg": 0.08
+      },
+      {
+        "joint": "knees",
+        "mean_angle_error_deg": 0.06
+      }
+    ]
+  },
+  {
+    "clip_id": "clip_17_jack_stiff_no_spine_ripple",
+    "passed": false,
+    "coverage_ratio": 1.0,
+    "foot_scoring_status": "available",
+    "mean_offset_ms": 5.0,
+    "good_or_better_ratio": 1.0,
+    "shape_score": 82.13,
+    "groove_score": 57.47,
+    "worst_beat": {
+      "count_number": 3,
+      "offset_ms": 5.09,
+      "judgment": "Perfect"
+    },
+    "worst_joints": [
+      {
+        "joint": "spine",
+        "mean_angle_error_deg": 13.57
+      },
+      {
+        "joint": "knees",
+        "mean_angle_error_deg": 12.34
+      },
+      {
+        "joint": "hips",
+        "mean_angle_error_deg": 4.75
+      }
+    ]
+  },
+  {
+    "clip_id": "clip_18_jack_missing_footwork_flat_feet",
+    "passed": false,
+    "coverage_ratio": 1.0,
+    "foot_scoring_status": "available",
+    "mean_offset_ms": 5.0,
+    "good_or_better_ratio": 1.0,
+    "shape_score": 55.31,
+    "groove_score": 100.0,
+    "worst_beat": {
+      "count_number": 3,
+      "offset_ms": 5.09,
+      "judgment": "Perfect"
+    },
+    "worst_joints": [
+      {
+        "joint": "left_foot",
+        "mean_angle_error_deg": 30.53
+      },
+      {
+        "joint": "right_foot",
+        "mean_angle_error_deg": 30.53
+      },
+      {
+        "joint": "knees",
+        "mean_angle_error_deg": 0.05
+      }
+    ]
+  },
+  {
+    "clip_id": "clip_19_jack_wrong_move_step_touch",
+    "passed": false,
+    "coverage_ratio": 1.0,
+    "foot_scoring_status": "available",
+    "mean_offset_ms": -121.01,
+    "good_or_better_ratio": 0.0,
+    "shape_score": 23.9,
+    "groove_score": 63.95,
+    "worst_beat": {
+      "count_number": 6,
+      "offset_ms": 255.42,
+      "judgment": "Late"
+    },
+    "worst_joints": [
+      {
+        "joint": "hips",
+        "mean_angle_error_deg": 46.7
+      },
+      {
+        "joint": "left_foot",
+        "mean_angle_error_deg": 24.28
+      },
+      {
+        "joint": "spine",
+        "mean_angle_error_deg": 16.91
+      }
+    ]
+  },
+  {
+    "clip_id": "clip_20_jack_rushed_second_half",
+    "passed": false,
+    "coverage_ratio": 1.0,
+    "foot_scoring_status": "available",
+    "mean_offset_ms": -75.0,
+    "good_or_better_ratio": 0.5,
+    "shape_score": 98.64,
+    "groove_score": 75.0,
+    "worst_beat": {
+      "count_number": 8,
+      "offset_ms": -155.16,
+      "judgment": "Early"
+    },
+    "worst_joints": [
+      {
+        "joint": "left_foot",
+        "mean_angle_error_deg": 1.1
+      },
+      {
+        "joint": "right_foot",
+        "mean_angle_error_deg": 1.1
+      },
+      {
+        "joint": "knees",
+        "mean_angle_error_deg": 0.77
+      }
+    ]
+  }
+]

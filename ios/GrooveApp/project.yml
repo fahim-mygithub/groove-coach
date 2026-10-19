@@ -1,0 +1,27 @@
+name: GrooveCoach
+options:
+  bundleIdPrefix: com.groovecoach
+  deploymentTarget:
+    iOS: "17.0"
+packages:
+  GrooveCore:
+    path: ../GrooveCore
+targets:
+  GrooveCoach:
+    type: application
+    platform: iOS
+    sources:
+      - Sources
+    dependencies:
+      - package: GrooveCore
+        product: GrooveCore
+    info:
+      path: Info.plist
+      properties:
+        CFBundleDisplayName: Groove Coach
+        NSCameraUsageDescription: "Groove Coach uses the full-body camera to track 3D pose and footwork timing."
+        NSMotionUsageDescription: "Groove Coach reads the phone's gravity tilt angle so a leaning phone on the floor does not distort joint angles."
+        NSPhotoLibraryUsageDescription: "Import reference dance videos or recorded golden clips to extract unified Vision 3D + foot pose JSON."
+        UILaunchScreen: {}
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait

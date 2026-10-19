@@ -1,0 +1,36 @@
+name: Linux Scoring & Swift-Python Parity CI
+
+on:
+  push:
+    branches: ["main", "master"]
+  pull_request:
+
+jobs:
+  scoring-and-parity:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Set up Swift on Linux
+        uses: swift-actions/setup-swift@v2
+        with:
+          swift-version: "5.10"
+
+      - name: Run Python M0 Evaluation & Unit Tests
+        run: |
+          python3 -m groove_eval.run_eval
+          python3 -m unittest discover -s tests -v
+
+      - name: Run Swift GrooveCore Unit Tests on Linux
+        run: |
+          swift test --package-path ios/GrooveCore
+
+      - name: Run Python vs. Swift Exact Parity Gate
+        run: |
+          python3 scripts/check_parity.py

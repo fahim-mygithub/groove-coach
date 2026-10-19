@@ -1,0 +1,52 @@
+{
+  "version": "1.0.0",
+  "models": {
+    "authoring_and_deep_review": "gemini-4-argon",
+    "between_rep_voice_coach": "gemini-3.8-live",
+    "routine_set_review": "gemini-3.8-flash",
+    "body_pose_3d": "VNDetectHumanBodyPose3DRequest",
+    "foot_keypoints_coreml": "MediaPipePoseLandmarker_FootKeypoints",
+    "beat_tracker_cpu": "beat_this_small_cpu"
+  },
+  "thinking_budgets": {
+    "authoring_segmentation_tokens": 4096,
+    "post_set_deep_review_tokens": 2048,
+    "routine_set_review_tokens": 512
+  },
+  "frame_rates": {
+    "camera_capture_fps": 60,
+    "vision_3d_target_fps": 30,
+    "vision_3d_fallback_fps": 15,
+    "foot_2d_target_fps": 60,
+    "argon_authoring_video_fps": 5,
+    "argon_review_video_fps": 5
+  },
+  "scoring_thresholds": {
+    "timing": {
+      "perfect_max_ms": 60.0,
+      "good_max_ms": 120.0,
+      "search_window_beats": 0.45
+    },
+    "shape": {
+      "max_angle_error_deg": 45.0,
+      "max_single_joint_error_deg": 24.0,
+      "foot_pitch_weight": 0.30,
+      "pass_min_score": 70.0
+    },
+    "groove": {
+      "min_knee_flex_ratio": 0.65,
+      "ideal_spine_lag_ms_min": 30.0,
+      "ideal_spine_lag_ms_max": 110.0,
+      "max_jerk_ratio": 2.5,
+      "pass_min_score": 65.0
+    },
+    "coverage": {
+      "min_joint_confidence": 0.50,
+      "min_valid_frame_ratio": 0.80
+    },
+    "gate": {
+      "min_good_or_better_beat_ratio": 0.80,
+      "speed_ladder_pct": [50, 75, 90, 100]
+    }
+  }
+}

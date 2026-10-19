@@ -1,0 +1,139 @@
+{
+  "lesson_segmentation_response": {
+    "type": "object",
+    "required": ["bpm", "total_counts", "segments"],
+    "additionalProperties": false,
+    "properties": {
+      "bpm": { "type": "number" },
+      "total_counts": { "type": "integer", "minimum": 8 },
+      "segments": {
+        "type": "array",
+        "minItems": 1,
+        "items": {
+          "type": "object",
+          "required": [
+            "start_count",
+            "end_count",
+            "move_tag",
+            "display_name",
+            "body_part_focus",
+            "texture",
+            "common_errors",
+            "short_cues"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "start_count": { "type": "integer", "minimum": 1 },
+            "end_count": { "type": "integer", "minimum": 1 },
+            "move_tag": {
+              "type": "string",
+              "enum": [
+                "down_bounce",
+                "up_bounce",
+                "step_touch",
+                "house_jack",
+                "two_step",
+                "skate",
+                "loose_legs",
+                "stomp",
+                "heel_toe",
+                "shuffle"
+              ]
+            },
+            "display_name": { "type": "string" },
+            "body_part_focus": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "enum": ["knees", "spine", "hips", "feet", "shoulders", "arms"]
+              }
+            },
+            "texture": { "type": "string", "enum": ["flow", "hit", "hybrid"] },
+            "common_errors": { "type": "array", "items": { "type": "string" } },
+            "short_cues": { "type": "array", "items": { "type": "string" } }
+          }
+        }
+      }
+    }
+  },
+  "between_rep_digest": {
+    "type": "object",
+    "required": [
+      "move_tag",
+      "speed_pct",
+      "passed",
+      "mean_timing_offset_ms",
+      "good_or_better_ratio",
+      "shape_score",
+      "groove_score",
+      "coverage_ratio",
+      "worst_beat",
+      "worst_joints",
+      "top_deterministic_issue"
+    ],
+    "additionalProperties": false,
+    "properties": {
+      "move_tag": { "type": "string" },
+      "speed_pct": { "type": "integer" },
+      "passed": { "type": "boolean" },
+      "mean_timing_offset_ms": { "type": "number" },
+      "good_or_better_ratio": { "type": "number" },
+      "shape_score": { "type": "number" },
+      "groove_score": { "type": "number" },
+      "coverage_ratio": { "type": "number" },
+      "worst_beat": {
+        "type": "object",
+        "required": ["count_number", "offset_ms", "judgment"],
+        "properties": {
+          "count_number": { "type": "integer" },
+          "offset_ms": { "type": "number" },
+          "judgment": { "type": "string", "enum": ["Perfect", "Good", "Early", "Late", "Miss"] }
+        }
+      },
+      "worst_joints": {
+        "type": "array",
+        "maxItems": 3,
+        "items": {
+          "type": "object",
+          "required": ["joint", "mean_angle_error_deg"],
+          "properties": {
+            "joint": { "type": "string" },
+            "mean_angle_error_deg": { "type": "number" }
+          }
+        }
+      },
+      "top_deterministic_issue": { "type": "string" }
+    }
+  },
+  "post_set_critique_response": {
+    "type": "object",
+    "required": [
+      "single_correction",
+      "evidence",
+      "why_it_happens",
+      "isolation_drill",
+      "tracking_or_wrong_move_flag"
+    ],
+    "additionalProperties": false,
+    "properties": {
+      "single_correction": { "type": "string" },
+      "evidence": {
+        "type": "object",
+        "required": ["count_number", "measured_offset_ms", "joint", "angle_error_deg"],
+        "additionalProperties": false,
+        "properties": {
+          "count_number": { "type": "integer", "minimum": 1 },
+          "measured_offset_ms": { "type": "number" },
+          "joint": { "type": "string" },
+          "angle_error_deg": { "type": "number" }
+        }
+      },
+      "why_it_happens": { "type": "string" },
+      "isolation_drill": { "type": "string" },
+      "tracking_or_wrong_move_flag": {
+        "type": "string",
+        "enum": ["none", "low_tracking_confidence", "wrong_move_detected"]
+      }
+    }
+  }
+}
