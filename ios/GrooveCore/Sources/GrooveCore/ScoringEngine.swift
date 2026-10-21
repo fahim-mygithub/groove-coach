@@ -77,6 +77,12 @@ public enum GrooveScoringEngine {
         public let perfect_max_ms: Double
         public let good_max_ms: Double
         public let search_window_beats: Double
+
+        public init(perfect_max_ms: Double, good_max_ms: Double, search_window_beats: Double) {
+            self.perfect_max_ms = perfect_max_ms
+            self.good_max_ms = good_max_ms
+            self.search_window_beats = search_window_beats
+        }
     }
 
     public struct ShapeThresholds: Sendable, Codable {
@@ -84,6 +90,13 @@ public enum GrooveScoringEngine {
         public let max_single_joint_error_deg: Double
         public let foot_pitch_weight: Double
         public let pass_min_score: Double
+
+        public init(max_angle_error_deg: Double, max_single_joint_error_deg: Double, foot_pitch_weight: Double, pass_min_score: Double) {
+            self.max_angle_error_deg = max_angle_error_deg
+            self.max_single_joint_error_deg = max_single_joint_error_deg
+            self.foot_pitch_weight = foot_pitch_weight
+            self.pass_min_score = pass_min_score
+        }
     }
 
     public struct GrooveThresholds: Sendable, Codable {
@@ -92,16 +105,34 @@ public enum GrooveScoringEngine {
         public let ideal_spine_lag_ms_max: Double
         public let max_jerk_ratio: Double
         public let pass_min_score: Double
+
+        public init(min_knee_flex_ratio: Double, ideal_spine_lag_ms_min: Double, ideal_spine_lag_ms_max: Double, max_jerk_ratio: Double, pass_min_score: Double) {
+            self.min_knee_flex_ratio = min_knee_flex_ratio
+            self.ideal_spine_lag_ms_min = ideal_spine_lag_ms_min
+            self.ideal_spine_lag_ms_max = ideal_spine_lag_ms_max
+            self.max_jerk_ratio = max_jerk_ratio
+            self.pass_min_score = pass_min_score
+        }
     }
 
     public struct CoverageThresholds: Sendable, Codable {
         public let min_joint_confidence: Double
         public let min_valid_frame_ratio: Double
+
+        public init(min_joint_confidence: Double, min_valid_frame_ratio: Double) {
+            self.min_joint_confidence = min_joint_confidence
+            self.min_valid_frame_ratio = min_valid_frame_ratio
+        }
     }
 
     public struct GateThresholds: Sendable, Codable {
         public let min_good_or_better_beat_ratio: Double
         public let speed_ladder_pct: [Int]
+
+        public init(min_good_or_better_beat_ratio: Double, speed_ladder_pct: [Int]) {
+            self.min_good_or_better_beat_ratio = min_good_or_better_beat_ratio
+            self.speed_ladder_pct = speed_ladder_pct
+        }
     }
 
     public struct ScoringThresholds: Sendable, Codable {
@@ -110,11 +141,24 @@ public enum GrooveScoringEngine {
         public let groove: GrooveThresholds
         public let coverage: CoverageThresholds
         public let gate: GateThresholds
+
+        public init(timing: TimingThresholds, shape: ShapeThresholds, groove: GrooveThresholds, coverage: CoverageThresholds, gate: GateThresholds) {
+            self.timing = timing
+            self.shape = shape
+            self.groove = groove
+            self.coverage = coverage
+            self.gate = gate
+        }
     }
 
     public struct GrooveConfig: Sendable, Codable {
         public let version: String
         public let scoring_thresholds: ScoringThresholds
+
+        public init(version: String, scoring_thresholds: ScoringThresholds) {
+            self.version = version
+            self.scoring_thresholds = scoring_thresholds
+        }
     }
 
     // MARK: - Pose Clip Models
@@ -123,6 +167,12 @@ public enum GrooveScoringEngine {
         public let t: Double
         public let joints: [String: [Double]]
         public let confidences: [String: Double]?
+
+        public init(t: Double, joints: [String: [Double]], confidences: [String: Double]? = nil) {
+            self.t = t
+            self.joints = joints
+            self.confidences = confidences
+        }
     }
 
     public struct ExpectedLabel: Sendable, Codable {
