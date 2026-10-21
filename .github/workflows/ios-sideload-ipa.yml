@@ -1,0 +1,50 @@
+name: iOS Unsigned IPA (Sideloadly)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build-ipa:
+    runs-on: macos-15
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Run GrooveCore Swift Tests
+        run: swift test --package-path ios/GrooveCore
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Xcode Project
+        working-directory: ios/GrooveApp
+        run: xcodegen generate
+
+      - name: Build unsigned app for device
+        working-directory: ios/GrooveApp
+        run: |
+          xcodebuild build \
+            -project GrooveCoach.xcodeproj \
+            -scheme GrooveCoach \
+            -sdk iphoneos \
+            -configuration Release \
+            -derivedDataPath "$RUNNER_TEMP/dd" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY=""
+
+      - name: Package IPA
+        run: |
+          APP="$RUNNER_TEMP/dd/Build/Products/Release-iphoneos/GrooveCoach.app"
+          test -d "$APP"
+          mkdir -p "$RUNNER_TEMP/ipa/Payload"
+          cp -R "$APP" "$RUNNER_TEMP/ipa/Payload/"
+          (cd "$RUNNER_TEMP/ipa" && zip -qry GrooveCoach.ipa Payload)
+          ls -lh "$RUNNER_TEMP/ipa/GrooveCoach.ipa"
+
+      - name: Upload IPA artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: GrooveCoach-unsigned-ipa
+          path: ${{ runner.temp }}/ipa/GrooveCoach.ipa
+          retention-days: 14
