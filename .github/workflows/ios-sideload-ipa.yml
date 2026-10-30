@@ -16,15 +16,28 @@ jobs:
       - name: Install XcodeGen
         run: brew install xcodegen
 
+      - name: Fetch pinned MediaPipe pose model
+        run: bash ios/GrooveApp/Resources/fetch_pose_model.sh
+
       - name: Generate Xcode Project
         working-directory: ios/GrooveApp
         run: xcodegen generate
+
+      - name: Install MediaPipe pods
+        working-directory: ios/GrooveApp
+        run: |
+          pod --version
+          if [ -f Podfile.lock ]; then
+            pod install --deployment
+          else
+            pod install
+          fi
 
       - name: Build unsigned app for device
         working-directory: ios/GrooveApp
         run: |
           xcodebuild build \
-            -project GrooveCoach.xcodeproj \
+            -workspace GrooveCoach.xcworkspace \
             -scheme GrooveCoach \
             -sdk iphoneos \
             -configuration Release \
@@ -32,6 +45,18 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY=""
+
+      - name: Verify foot tracking is in the app bundle
+        run: |
+          APP="$RUNNER_TEMP/dd/Build/Products/Release-iphoneos/GrooveCoach.app"
+          test -f "$APP/pose_landmarker_full.task" || { echo "pose model missing from app bundle"; exit 1; }
+          # MediaPipeTasksVision/Common are static frameworks: verify they are linked into the app binary.
+          strings "$APP/GrooveCoach" > "$RUNNER_TEMP/app-strings.txt"
+          grep -q "MPPPoseLandmarker" "$RUNNER_TEMP/app-strings.txt" || { echo "MediaPipe PoseLandmarker not linked"; exit 1; }
+          grep -q "MediaPipeFootKeypointProvider" "$RUNNER_TEMP/app-strings.txt" || { echo "FootKeypointProvider compiled without MediaPipe"; exit 1; }
+          otool -L "$APP/GrooveCoach"
+          if [ -d "$APP/Frameworks" ]; then ls -la "$APP/Frameworks"; fi
+          ls -la "$APP"
 
       - name: Package IPA
         run: |
@@ -41,10 +66,18 @@ jobs:
           cp -R "$APP" "$RUNNER_TEMP/ipa/Payload/"
           (cd "$RUNNER_TEMP/ipa" && zip -qry GrooveCoach.ipa Payload)
           ls -lh "$RUNNER_TEMP/ipa/GrooveCoach.ipa"
+          unzip -l "$RUNNER_TEMP/ipa/GrooveCoach.ipa"
 
       - name: Upload IPA artifact
         uses: actions/upload-artifact@v4
         with:
           name: GrooveCoach-unsigned-ipa
           path: ${{ runner.temp }}/ipa/GrooveCoach.ipa
+          retention-days: 14
+
+      - name: Upload Podfile.lock
+        uses: actions/upload-artifact@v4
+        with:
+          name: Podfile-lock
+          path: ios/GrooveApp/Podfile.lock
           retention-days: 14
