@@ -16,8 +16,10 @@ struct FootKeypointResult {
 protocol FootKeypointProvider: AnyObject {
     /// `visionAnkles` holds the Vision 3D `leftAnkle` / `rightAnkle` positions of the same frame (if detected),
     /// used to anchor the foot vectors into the Vision 3D body space consumed by `GrooveScoringEngine`.
+    /// `orientation` is the display orientation of the frame (the same one the Vision requests use).
     func footKeypoints(
         from sampleBuffer: CMSampleBuffer,
+        orientation: UIImage.Orientation,
         timestampSeconds: Double,
         visionAnkles: [String: [Double]]
     ) -> FootKeypointResult?
@@ -78,6 +80,7 @@ final class MediaPipeFootKeypointProvider: FootKeypointProvider {
 
     func footKeypoints(
         from sampleBuffer: CMSampleBuffer,
+        orientation: UIImage.Orientation,
         timestampSeconds: Double,
         visionAnkles: [String: [Double]]
     ) -> FootKeypointResult? {
@@ -85,7 +88,7 @@ final class MediaPipeFootKeypointProvider: FootKeypointProvider {
         guard timestampMs > lastTimestampMs else { return nil }
         lastTimestampMs = timestampMs
 
-        guard let image = try? MPImage(sampleBuffer: sampleBuffer, orientation: .up),
+        guard let image = try? MPImage(sampleBuffer: sampleBuffer, orientation: orientation),
               let result = try? landmarker.detect(videoFrame: image, timestampInMilliseconds: timestampMs),
               let world = result.worldLandmarks.first, world.count > 32,
               let normalized = result.landmarks.first, normalized.count > 32 else {

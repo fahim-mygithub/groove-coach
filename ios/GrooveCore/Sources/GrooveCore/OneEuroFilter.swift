@@ -128,7 +128,8 @@ public enum OneEuro {
             GrooveScoringEngine.RawPoseFrame(
                 t: frame.t,
                 joints: filter(joints: frame.joints, t: frame.t),
-                confidences: frame.confidences
+                confidences: frame.confidences,
+                hands: frame.hands
             )
         }
     }

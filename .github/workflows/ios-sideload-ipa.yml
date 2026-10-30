@@ -58,6 +58,29 @@ jobs:
           if [ -d "$APP/Frameworks" ]; then ls -la "$APP/Frameworks"; fi
           ls -la "$APP"
 
+      - name: Verify hand pose, gestures and scoring config are in the app bundle
+        run: |
+          APP="$RUNNER_TEMP/dd/Build/Products/Release-iphoneos/GrooveCoach.app"
+          # Imported system classes live in the dyld imports (__LINKEDIT), which plain `strings` skips: use nm -u.
+          nm -u "$APP/GrooveCoach" > "$RUNNER_TEMP/app-imports.txt"
+          strings -a "$APP/GrooveCoach" > "$RUNNER_TEMP/app-strings-all.txt"
+          # Apple Vision hand pose path (no extra dependency): the request class and our 21-point mapper.
+          grep -q 'OBJC_CLASS_$_VNDetectHumanHandPoseRequest' "$RUNNER_TEMP/app-imports.txt" || { echo "VNDetectHumanHandPoseRequest not linked: hand pose path not compiled in"; exit 1; }
+          grep -q 'OBJC_CLASS_$_VNDetectHumanBodyPose3DRequest' "$RUNNER_TEMP/app-imports.txt" || { echo "Vision 3D body pose not linked"; exit 1; }
+          grep -q "HandPoseExtractor" "$RUNNER_TEMP/app-strings-all.txt" || { echo "HandPoseExtractor missing from app binary"; exit 1; }
+          grep -q "PracticeCamera" "$RUNNER_TEMP/app-strings-all.txt" || { echo "Practice capture (gestures) missing from app binary"; exit 1; }
+          grep -q "GestureRecognizer" "$RUNNER_TEMP/app-strings-all.txt" || { echo "GestureRecognizer missing from app binary"; exit 1; }
+          grep -E "VNDetectHuman(Hand|Body)Pose" "$RUNNER_TEMP/app-imports.txt"
+          # Bundled scoring config must carry the wave-2 sections.
+          test -f "$APP/groove_config.json" || { echo "groove_config.json missing from app bundle"; exit 1; }
+          for key in smoothing hits joint_tolerance hands; do
+            plutil -extract "scoring_thresholds.$key" json -o - "$APP/groove_config.json" >/dev/null || { echo "config section $key missing"; exit 1; }
+          done
+          # Usage strings for camera, motion and photo library.
+          for key in NSCameraUsageDescription NSMotionUsageDescription NSPhotoLibraryUsageDescription; do
+            plutil -extract "$key" raw -o - "$APP/Info.plist" || { echo "$key missing from Info.plist"; exit 1; }
+          done
+
       - name: Package IPA
         run: |
           APP="$RUNNER_TEMP/dd/Build/Products/Release-iphoneos/GrooveCoach.app"
