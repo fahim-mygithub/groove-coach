@@ -15,7 +15,9 @@ struct LiveSkeleton {
 ///   the Calibrate tab);
 /// - runs lightweight live Vision (2D body + `VNDetectHumanHandPoseRequest`) on spare frames to drive the skeleton
 ///   overlay, live hand-shape labels and the hands-free `GestureRecognizer`.
-final class PracticeCamera: NSObject, ObservableObject, AVCaptureVideoDataOutputSampleBufferDelegate {
+/// Thread confinement: capture + recording state lives on `videoQueue`, gesture state on `analysisQueue`, published
+/// properties are only written on the main queue.
+final class PracticeCamera: NSObject, ObservableObject, AVCaptureVideoDataOutputSampleBufferDelegate, @unchecked Sendable {
     let session = AVCaptureSession()
 
     @Published private(set) var skeleton = LiveSkeleton(joints: [:], imageAspect: 9.0 / 16.0)
