@@ -51,7 +51,9 @@ jobs:
           APP="$RUNNER_TEMP/dd/Build/Products/Release-iphoneos/GrooveCoach.app"
           test -f "$APP/pose_landmarker_full.task" || { echo "pose model missing from app bundle"; exit 1; }
           # MediaPipeTasksVision/Common are static frameworks: verify they are linked into the app binary.
-          strings "$APP/GrooveCoach" | grep -q "MPPPoseLandmarker" || { echo "MediaPipe PoseLandmarker not linked"; exit 1; }
+          strings "$APP/GrooveCoach" > "$RUNNER_TEMP/app-strings.txt"
+          grep -q "MPPPoseLandmarker" "$RUNNER_TEMP/app-strings.txt" || { echo "MediaPipe PoseLandmarker not linked"; exit 1; }
+          grep -q "MediaPipeFootKeypointProvider" "$RUNNER_TEMP/app-strings.txt" || { echo "FootKeypointProvider compiled without MediaPipe"; exit 1; }
           otool -L "$APP/GrooveCoach"
           if [ -d "$APP/Frameworks" ]; then ls -la "$APP/Frameworks"; fi
           ls -la "$APP"
