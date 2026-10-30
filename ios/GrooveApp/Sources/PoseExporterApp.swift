@@ -64,6 +64,7 @@ struct CalibrationOnboardingView: View {
     @State private var exportedBundleURL: URL?
 
     @State private var statusText: String = "Step 1: Import reference clips (`down_bounce`, `house_jack`), then ingest your ~20 calibration clips."
+    private let footTrackingAvailable = FootKeypointProviderFactory.isAvailable
     @State private var measuredFps: Double = 0.0
 
     private let motionManager = CMMotionManager()
@@ -102,6 +103,12 @@ struct CalibrationOnboardingView: View {
                     Text(statusText)
                         .font(.footnote)
                         .foregroundStyle(.secondary)
+                    Label(
+                        footTrackingAvailable ? "Foot tracking: MediaPipe Pose Landmarker" : "Foot tracking: unavailable in this build",
+                        systemImage: footTrackingAvailable ? "shoeprints.fill" : "exclamationmark.triangle"
+                    )
+                    .font(.caption)
+                    .foregroundStyle(footTrackingAvailable ? .green : .orange)
                     if measuredFps > 0 {
                         Text(String(format: "Last Vision 3D + Foot Speed: %.1f fps", measuredFps))
                             .font(.caption.monospacedDigit().bold())
@@ -308,6 +315,7 @@ enum VideoPoseExtractor {
         reader.add(trackOutput)
         reader.startReading()
 
+        let footProvider = FootKeypointProviderFactory.makeVideoProvider()
         var extracted: [GrooveScoringEngine.RawPoseFrame] = []
         while let sampleBuffer = trackOutput.copyNextSampleBuffer() {
             let timestamp = CMSampleBufferGetPresentationTimeStamp(sampleBuffer).seconds
@@ -322,16 +330,22 @@ enum VideoPoseExtractor {
 
             for (name, jointKey) in visionJointMap {
                 if let point = try? obs3D.recognizedPoint(jointKey) {
-                    let pos = point.localPosition.columns.3
+                    // `position` is root-relative model space (meters); `localPosition` is parent-joint-relative.
+                    let pos = point.position.columns.3
                     jointsDict[name] = [Double(pos.x), Double(pos.y), Double(pos.z)]
                     confDict[name] = 0.95
                 }
             }
 
             // Foot keypoints: NEVER fake heel/toe positions from ankle offsets.
-            // Only populate if a real FootKeypointProvider (e.g. MediaPipeTasksVision PoseLandmarker) returns them;
+            // Only populate if a real FootKeypointProvider (MediaPipeTasksVision PoseLandmarker) returns them;
             // otherwise leave foot joints absent from `jointsDict` with explicit 0.0 confidence so scoring reports "unavailable".
-            if let realFeet = FootLandmarkerBridge.extractFootKeypoints(from: sampleBuffer, timestampSeconds: timestamp) {
+            let visionAnkles = jointsDict.filter { $0.key == "leftAnkle" || $0.key == "rightAnkle" }
+            if let realFeet = footProvider?.footKeypoints(
+                from: sampleBuffer,
+                timestampSeconds: timestamp,
+                visionAnkles: visionAnkles
+            ) {
                 for (footName, coords) in realFeet.joints {
                     jointsDict[footName] = coords
                 }
@@ -354,28 +368,6 @@ enum VideoPoseExtractor {
             )
         }
         return extracted
-    }
-}
-
-/// Bridge for real foot keypoint extraction (`leftHeel`, `leftFootIndex`, `rightHeel`, `rightFootIndex`).
-/// Uses official `MediaPipeTasksVision` (`PoseLandmarker` indices 29, 30, 31, 32) when linked;
-/// returns `nil` (zero confidence, never fake ankle offsets) when running body-only Build #1.
-enum FootLandmarkerBridge {
-    struct FootResult {
-        let joints: [String: [Double]]
-        let confidences: [String: Double]
-    }
-
-    static func extractFootKeypoints(
-        from sampleBuffer: CMSampleBuffer,
-        timestampSeconds: Double
-    ) -> FootResult? {
-        #if canImport(MediaPipeTasksVision)
-        // MediaPipe PoseLandmarker indices: 29 = left_heel, 30 = right_heel, 31 = left_foot_index, 32 = right_foot_index
-        return nil
-        #else
-        return nil
-        #endif
     }
 }
 
