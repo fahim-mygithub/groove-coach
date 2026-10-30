@@ -12,6 +12,14 @@ targets:
     platform: iOS
     sources:
       - Sources
+      # MediaPipe Pose Landmarker model; fetched (sha256-pinned) by Resources/fetch_pose_model.sh, not committed.
+      - path: Resources/pose_landmarker_full.task
+        optional: true
+        buildPhase: resources
+    settings:
+      base:
+        # CocoaPods' generated script phases are not sandbox-aware.
+        ENABLE_USER_SCRIPT_SANDBOXING: "NO"
     dependencies:
       - package: GrooveCore
         product: GrooveCore
