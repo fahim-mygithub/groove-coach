@@ -1,4 +1,5 @@
 import AVFoundation
+import CoreMedia
 import Combine
 import SwiftUI
 import UIKit
@@ -407,11 +408,13 @@ public final class LessonPlayerViewModel: ObservableObject {
             isPlaying = true
             return
         }
-
         // Host clock alignment: video starts at startHostSeconds + countInDuration
+        let hostClock = CMClockGetHostTimeClock()
+        let currentHostTime = CMClockGetTime(hostClock)
+        let currentSeconds = CMTimeGetSeconds(currentHostTime)
         let videoStartHostSeconds = startHostSeconds + countInDuration
-        let videoStartMachTicks = AVAudioTime.hostTime(forSeconds: videoStartHostSeconds)
-        let hostClockTime = CMClockMakeHostTimeFromSystemTimeStamp(videoStartMachTicks)
+        let deltaSeconds = max(0.0, videoStartHostSeconds - currentSeconds)
+        let hostClockTime = CMTimeAdd(currentHostTime, CMTime(seconds: deltaSeconds, preferredTimescale: 10_000_000))
 
         // Spec §2.4: setRate(rate, time: segment.start_s, atHostTime:)
         player.setRate(
@@ -557,30 +560,36 @@ public final class LessonPlayerViewModel: ObservableObject {
 
         let interval = CMTime(value: 1, timescale: 30)
         timeObserverToken = player.addPeriodicTimeObserver(forInterval: interval, queue: .main) { [weak self] time in
-            guard let self else { return }
-            let t = CMTimeGetSeconds(time)
-
-            // Loop check
-            if t >= self.segment.end_s {
-                if self.isLooping {
-                    self.player.seek(
-                        to: CMTime(seconds: self.segment.start_s, preferredTimescale: 600),
-                        toleranceBefore: .zero,
-                        toleranceAfter: .zero
-                    )
-                    self.player.play()
-                    self.player.rate = Float(self.playbackRate)
-                } else {
-                    self.pausePlayback()
-                }
-                return
+            Task { @MainActor [weak self] in
+                self?.handlePlaybackTimeUpdate(time: time)
             }
+        }
+    }
 
-            // Update 1..8 beat counter from beat_grid
-            if let activeBeat = self.segmentBeats.last(where: { $0.t <= (t + 0.05) }) {
-                self.currentBeatCount = activeBeat.count
-                self.currentPhrase = activeBeat.phrase
+    @MainActor
+    private func handlePlaybackTimeUpdate(time: CMTime) {
+        let t = CMTimeGetSeconds(time)
+
+        // Loop check
+        if t >= segment.end_s {
+            if isLooping {
+                player.seek(
+                    to: CMTime(seconds: segment.start_s, preferredTimescale: 600),
+                    toleranceBefore: .zero,
+                    toleranceAfter: .zero
+                )
+                player.play()
+                player.rate = Float(playbackRate)
+            } else {
+                pausePlayback()
             }
+            return
+        }
+
+        // Update 1..8 beat counter from beat_grid
+        if let activeBeat = segmentBeats.last(where: { $0.t <= (t + 0.05) }) {
+            currentBeatCount = activeBeat.count
+            currentPhrase = activeBeat.phrase
         }
     }
 }
