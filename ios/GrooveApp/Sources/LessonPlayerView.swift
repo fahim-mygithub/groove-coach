@@ -456,38 +456,38 @@ public struct LessonPlayerView: View {
 // MARK: - View Model
 
 @MainActor
-public final class LessonPlayerViewModel: ObservableObject {
-    public enum Phase: Equatable {
+final class LessonPlayerViewModel: ObservableObject {
+    enum Phase: Equatable {
         case idle, countIn, recording, analyzing, results
     }
 
-    @Published public var phase: Phase = .idle
-    @Published public var isPlaying: Bool = false
-    @Published public var isCountIn: Bool = false
-    @Published public var isMirrored: Bool = true
-    @Published public var isLooping: Bool = true
-    @Published public var countInBeatsLeft: Int = 4
-    @Published public var currentBeatCount: Int = 1
-    @Published public var currentPhrase: Int = 1
-    @Published public var playbackRate: Double = 0.70
-    @Published public var nextSegmentUnlocked: Bool = false
-    @Published public var takeHistory: [LessonPackage.Take] = []
-    @Published public var statusMessage: String = ""
-    @Published public var latestScoreResult: GrooveScoringEngine.AttemptScoreResult?
-    @Published public var latestTakeClip: GrooveScoringEngine.PoseClip?
-    @Published public var latestRefClip: GrooveScoringEngine.PoseClip?
-    @Published public var latestResultPose: [String: CGPoint] = [:]
-    @Published public var gradingRefusalReason: String?
-    @Published public var showResultsSheet: Bool = false
-    @Published public var showShareSheet: Bool = false
-    @Published public var shareURL: URL?
+    @Published var phase: Phase = .idle
+    @Published var isPlaying: Bool = false
+    @Published var isCountIn: Bool = false
+    @Published var isMirrored: Bool = true
+    @Published var isLooping: Bool = true
+    @Published var countInBeatsLeft: Int = 4
+    @Published var currentBeatCount: Int = 1
+    @Published var currentPhrase: Int = 1
+    @Published var playbackRate: Double = 0.70
+    @Published var nextSegmentUnlocked: Bool = false
+    @Published var takeHistory: [LessonPackage.Take] = []
+    @Published var statusMessage: String = ""
+    @Published var latestScoreResult: GrooveScoringEngine.AttemptScoreResult?
+    @Published var latestTakeClip: GrooveScoringEngine.PoseClip?
+    @Published var latestRefClip: GrooveScoringEngine.PoseClip?
+    @Published var latestResultPose: [String: CGPoint] = [:]
+    @Published var gradingRefusalReason: String?
+    @Published var showResultsSheet: Bool = false
+    @Published var showShareSheet: Bool = false
+    @Published var shareURL: URL?
 
-    public let manifest: LessonPackage.Manifest
-    public let segment: LessonPackage.Segment
-    public let videoURL: URL?
-    public let player = AVPlayer()
-    public let camera = PracticeCamera()
-    public let extractPoses: @Sendable (URL) async throws -> [GrooveScoringEngine.RawPoseFrame]
+    let manifest: LessonPackage.Manifest
+    let segment: LessonPackage.Segment
+    let videoURL: URL?
+    let player = AVPlayer()
+    let camera = PracticeCamera()
+    let extractPoses: @Sendable (URL) async throws -> [GrooveScoringEngine.RawPoseFrame]
 
     private let metronome = Metronome()
     private var timeObserverToken: Any?
@@ -496,24 +496,24 @@ public final class LessonPlayerViewModel: ObservableObject {
     private var segmentBeats: [LessonPackage.Beat] = []
     private var takeCounter = 0
 
-    public var hasVideo: Bool {
+    var hasVideo: Bool {
         videoURL != nil && FileManager.default.fileExists(atPath: videoURL!.path)
     }
 
-    public var isTakingTake: Bool {
+    var isTakingTake: Bool {
         phase == .countIn || phase == .recording
     }
 
-    public var adaptiveStatusText: String {
+    var adaptiveStatusText: String {
         let policy = segment.adaptiveSpeed ?? manifest.practice.adaptiveSpeed
         return "Ladder: [\(String(format: "%.1f", policy.minRate))x - \(String(format: "%.1f", policy.maxRate))x] • Takes: \(takeHistory.count)"
     }
 
-    public static let defaultExtractPoses: @Sendable (URL) async throws -> [GrooveScoringEngine.RawPoseFrame] = { url in
+    static let defaultExtractPoses: @Sendable (URL) async throws -> [GrooveScoringEngine.RawPoseFrame] = { url in
         try await VideoPoseExtractor.extractFrames(from: url, rebaseToFirstSample: false)
     }
 
-    public init(
+    init(
         manifest: LessonPackage.Manifest,
         segment: LessonPackage.Segment,
         videoURL: URL?,
@@ -557,22 +557,22 @@ public final class LessonPlayerViewModel: ObservableObject {
         }
     }
 
-    public func onAppear() {
+    func onAppear() {
         UIApplication.shared.isIdleTimerDisabled = true
         restartWithCountIn()
     }
 
-    public func onDisappear() {
+    func onDisappear() {
         UIApplication.shared.isIdleTimerDisabled = false
         stopPlayback()
         camera.stop()
     }
 
-    public func toggleMirror() {
+    func toggleMirror() {
         isMirrored.toggle()
     }
 
-    public func togglePlayPause() {
+    func togglePlayPause() {
         if isPlaying {
             pausePlayback()
         } else {
@@ -582,7 +582,7 @@ public final class LessonPlayerViewModel: ObservableObject {
 
     // MARK: - Review Playback Flow
 
-    public func restartWithCountIn() {
+    func restartWithCountIn() {
         guard hasVideo else { return }
         stopPlayback()
 
@@ -639,7 +639,7 @@ public final class LessonPlayerViewModel: ObservableObject {
         }
     }
 
-    public func pausePlayback() {
+    func pausePlayback() {
         metronome.stop()
         countInTask?.cancel()
         isCountIn = false
@@ -647,13 +647,13 @@ public final class LessonPlayerViewModel: ObservableObject {
         isPlaying = false
     }
 
-    public func stopPlayback() {
+    func stopPlayback() {
         pausePlayback()
     }
 
     // MARK: - Take Flow (Spec §2.4)
 
-    public func startTake() {
+    func startTake() {
         stopPlayback()
         takeExecutionTask?.cancel()
         phase = .countIn
@@ -759,7 +759,7 @@ public final class LessonPlayerViewModel: ObservableObject {
         }
     }
 
-    public func abortTake() {
+    func abortTake() {
         takeExecutionTask?.cancel()
         takeExecutionTask = nil
         countInTask?.cancel()
@@ -886,12 +886,12 @@ public final class LessonPlayerViewModel: ObservableObject {
 
     // MARK: - Adaptive Speed Ladder
 
-    public func simulateTake(passed: Bool) {
+    func simulateTake(passed: Bool) {
         recordTake(passed: passed, rate: playbackRate)
         statusMessage = "Simulated \(passed ? "PASS" : "FAIL") at \(String(format: "%.2fx", playbackRate))."
     }
 
-    public func setRateManually(_ rate: Double) {
+    func setRateManually(_ rate: Double) {
         playbackRate = rate
         if isPlaying {
             player.rate = Float(rate)
@@ -900,7 +900,7 @@ public final class LessonPlayerViewModel: ObservableObject {
         recordTake(passed: false, rate: rate)
     }
 
-    public func resetHistory() {
+    func resetHistory() {
         takeHistory.removeAll()
         LessonStore.shared.clearTakes(lessonID: manifest.lessonID, version: manifest.packageVersion, segmentID: segment.id)
         let policy = segment.adaptiveSpeed ?? manifest.practice.adaptiveSpeed
@@ -932,7 +932,7 @@ public final class LessonPlayerViewModel: ObservableObject {
 
     // MARK: - Attempt Export (Spec §5 V4)
 
-    public func exportAttemptBundle() {
+    func exportAttemptBundle() {
         guard let scoreResult = latestScoreResult else { return }
         let policy = segment.adaptiveSpeed ?? manifest.practice.adaptiveSpeed
         let refFrames = LessonStore.shared.loadReferenceClip(for: manifest)?.frames ?? []
