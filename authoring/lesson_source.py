@@ -35,6 +35,8 @@ ARGON_SCHEMA_PATH = ROOT / "schemas" / "argon_breakdown.schema.json"
 
 BOUNDARY_TOLERANCE_S = 0.040
 RATE_EPS = 1e-6
+# Smallest tail a cut may keep past its last segment end: about 2 frames at 24 fps, enough for the recut to keep the final beat.
+MIN_TAIL_PAD_S = 0.10
 
 CANONICAL_JOINTS: Set[str] = {
     "root",
@@ -223,7 +225,7 @@ def pad_cut_plan(
 def validate_breakdown(
     breakdown: Mapping[str, Any],
     schema: Optional[Mapping[str, Any]] = None,
-    tail_pad_s: float = 0.25,
+    tail_pad_s: float = MIN_TAIL_PAD_S,
 ) -> List[str]:
     """Validate an Argon breakdown dictionary against schema and cross-field rules."""
     loaded_schema = schema if schema is not None else load_breakdown_schema()
@@ -416,7 +418,8 @@ def to_lesson_source(
     """
     if timemap is None:
         breakdown = pad_cut_plan(breakdown, tail_pad_s=tail_pad_s, head_pad_s=head_pad_s)
-        errors = validate_breakdown(breakdown, tail_pad_s=tail_pad_s)
+        # Padding aims for tail_pad_s but stops at the usable shot's end, so only require the floor.
+        errors = validate_breakdown(breakdown, tail_pad_s=min(tail_pad_s, MIN_TAIL_PAD_S))
         if errors:
             raise ValueError("Argon breakdown validation failed:\n  " + "\n  ".join(errors))
         timemap = build_timemap_from_cut_plan(breakdown["cut_plan"])
