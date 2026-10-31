@@ -46,6 +46,15 @@ final class GrooveLibrary: ObservableObject {
         return fallbackConfig
     }
 
+    /// Returns raw Data of `config/groove_config.json` bundled in the app, or encoded fallback.
+    public static func loadBundledConfigData() -> Data {
+        if let url = Bundle.main.url(forResource: "groove_config", withExtension: "json"),
+           let data = try? Data(contentsOf: url) {
+            return data
+        }
+        return (try? JSONEncoder().encode(fallbackConfig)) ?? Data()
+    }
+
     /// Used only if the bundled config is missing or unreadable; mirrors config/groove_config.json.
     static let fallbackConfig = GrooveScoringEngine.GrooveConfig(
         version: "1.0.0",

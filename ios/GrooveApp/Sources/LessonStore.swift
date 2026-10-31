@@ -1,5 +1,10 @@
 import CryptoKit
 import Foundation
+import GrooveCore
+
+public typealias LessonManifest = LessonPackage.Manifest
+
+extension LessonPackage.Segment: Identifiable {}
 
 /// Manages lesson packages stored on device:
 /// - downloads packages to a staging directory,
@@ -7,6 +12,7 @@ import Foundation
 /// - moves verified packages atomically to `Application Support/Lessons/{lesson_id}/v{n}/` (excluded from backup),
 /// - retains older versions until the new one successfully verifies,
 /// - caches catalog metadata locally for offline access,
+/// - persists per-segment take history and evaluates adaptive speed progression,
 /// - supports Dev Mode loading directly from a folder in the Files app.
 @MainActor
 public final class LessonStore: ObservableObject {
@@ -53,18 +59,101 @@ public final class LessonStore: ObservableObject {
     }
 
     /// Load the manifest for a downloaded lesson version.
-    public func loadManifest(lessonId: String, version: Int) -> LessonManifest? {
+    public func loadManifest(lessonId: String, version: Int) -> LessonPackage.Manifest? {
         let dir = lessonVersionDirectory(lessonId: lessonId, version: version)
         let manifestURL = dir.appendingPathComponent("manifest.json")
         guard let data = try? Data(contentsOf: manifestURL) else { return nil }
-        return try? JSONDecoder().decode(LessonManifest.self, from: data)
+        return try? JSONDecoder().decode(LessonPackage.Manifest.self, from: data)
     }
 
     /// Resolves the local URL of the video file for a downloaded lesson.
-    public func localVideoURL(for manifest: LessonManifest) -> URL? {
-        let dir = lessonVersionDirectory(lessonId: manifest.lesson_id, version: manifest.package_version)
+    public func localVideoURL(for manifest: LessonPackage.Manifest) -> URL? {
+        let dir = lessonVersionDirectory(lessonId: manifest.lessonID, version: manifest.packageVersion)
         let videoURL = dir.appendingPathComponent(manifest.video.file)
         return FileManager.default.fileExists(atPath: videoURL.path) ? videoURL : nil
+    }
+
+    /// Resolves the local URL of the reference pose JSON file for a downloaded lesson.
+    public func localReferenceURL(for manifest: LessonPackage.Manifest) -> URL? {
+        let dir = lessonVersionDirectory(lessonId: manifest.lessonID, version: manifest.packageVersion)
+        let refURL = dir.appendingPathComponent(manifest.reference.file)
+        return FileManager.default.fileExists(atPath: refURL.path) ? refURL : nil
+    }
+
+    /// Loads the reference pose clip from disk.
+    public func loadReferenceClip(for manifest: LessonPackage.Manifest) -> GrooveScoringEngine.PoseClip? {
+        guard let url = localReferenceURL(for: manifest),
+              let data = try? Data(contentsOf: url) else { return nil }
+        return try? JSONDecoder().decode(GrooveScoringEngine.PoseClip.self, from: data)
+    }
+
+    // MARK: - Per-Segment Take History & Adaptive Progression
+
+    public struct PersistedTakeRecord: Codable, Sendable {
+        public let passed: Bool
+        public let rate: Double?
+        public let timestamp: Date
+
+        public init(passed: Bool, rate: Double?, timestamp: Date = Date()) {
+            self.passed = passed
+            self.rate = rate
+            self.timestamp = timestamp
+        }
+    }
+
+    public func takeHistoryKey(lessonID: String, version: Int, segmentID: String) -> String {
+        "groove_takes_\(lessonID)_v\(version)_\(segmentID)"
+    }
+
+    public func loadTakes(lessonID: String, version: Int, segmentID: String) -> [LessonPackage.Take] {
+        let key = takeHistoryKey(lessonID: lessonID, version: version, segmentID: segmentID)
+        guard let data = UserDefaults.standard.data(forKey: key),
+              let records = try? JSONDecoder().decode([PersistedTakeRecord].self, from: data) else {
+            return []
+        }
+        return records.map { LessonPackage.Take(passed: $0.passed, rate: $0.rate) }
+    }
+
+    public func saveTake(lessonID: String, version: Int, segmentID: String, passed: Bool, rate: Double?) {
+        let key = takeHistoryKey(lessonID: lessonID, version: version, segmentID: segmentID)
+        var records: [PersistedTakeRecord] = []
+        if let data = UserDefaults.standard.data(forKey: key),
+           let existing = try? JSONDecoder().decode([PersistedTakeRecord].self, from: data) {
+            records = existing
+        }
+        records.append(PersistedTakeRecord(passed: passed, rate: rate))
+        if let encoded = try? JSONEncoder().encode(records) {
+            UserDefaults.standard.set(encoded, forKey: key)
+        }
+    }
+
+    public func clearTakes(lessonID: String, version: Int, segmentID: String) {
+        let key = takeHistoryKey(lessonID: lessonID, version: version, segmentID: segmentID)
+        UserDefaults.standard.removeObject(forKey: key)
+    }
+
+    /// Check if a segment is unlocked according to the teaching sequence and previous segment performance (spec §8 Q6).
+    public func isSegmentUnlocked(manifest: LessonPackage.Manifest, segmentID: String) -> Bool {
+        guard let seg = manifest.segments.first(where: { $0.id == segmentID }) else { return false }
+        if seg.teachOrder <= 1 { return true }
+        let sorted = manifest.segments.sorted(by: { $0.teachOrder < $1.teachOrder })
+        guard let idx = sorted.firstIndex(where: { $0.id == segmentID }), idx > 0 else { return true }
+        let prevSeg = sorted[idx - 1]
+        let prevTakes = loadTakes(lessonID: manifest.lessonID, version: manifest.packageVersion, segmentID: prevSeg.id)
+        let prevPolicy = prevSeg.adaptiveSpeed ?? manifest.practice.adaptiveSpeed
+        let (_, unlocked) = (try? LessonPackage.nextRate(policy: prevPolicy, history: prevTakes)) ?? (prevPolicy.startRate, false)
+        return unlocked
+    }
+
+    /// Returns the current playback rate offered by the adaptive speed policy for a segment.
+    public func currentRate(manifest: LessonPackage.Manifest, segmentID: String) -> Double {
+        guard let seg = manifest.segments.first(where: { $0.id == segmentID }) else {
+            return manifest.practice.adaptiveSpeed.startRate
+        }
+        let policy = seg.adaptiveSpeed ?? manifest.practice.adaptiveSpeed
+        let takes = loadTakes(lessonID: manifest.lessonID, version: manifest.packageVersion, segmentID: segmentID)
+        let (rate, _) = (try? LessonPackage.nextRate(policy: policy, history: takes)) ?? (policy.startRate, false)
+        return rate
     }
 
     // MARK: - Catalog & Offline Cache
@@ -106,9 +195,7 @@ public final class LessonStore: ObservableObject {
     // MARK: - Download & Atomic Verification
 
     /// Download and atomically verify a lesson package from Supabase Storage.
-    ///
-    /// Keeps existing versions untouched if download or SHA-256 verification fails.
-    public func downloadLesson(item: CatalogItem) async throws -> LessonManifest {
+    public func downloadLesson(item: CatalogItem) async throws -> LessonPackage.Manifest {
         downloadingLessonId = item.lesson_id
         downloadProgress = 0.0
         defer {
@@ -132,7 +219,7 @@ public final class LessonStore: ObservableObject {
             manifestData = try await supabaseClient.fetchStorageData(bucket: "lesson-packages", path: manifestPath)
         }
 
-        let manifest = try JSONDecoder().decode(LessonManifest.self, from: manifestData)
+        let manifest = try JSONDecoder().decode(LessonPackage.Manifest.self, from: manifestData)
         let manifestDestURL = stagingDir.appendingPathComponent("manifest.json")
         try manifestData.write(to: manifestDestURL, options: .atomic)
 
@@ -161,7 +248,7 @@ public final class LessonStore: ObservableObject {
         }
 
         // 4. All files verified successfully: move atomically to Application Support/Lessons/{lesson_id}/v{n}/
-        let targetVersionDir = lessonVersionDirectory(lessonId: manifest.lesson_id, version: manifest.package_version)
+        let targetVersionDir = lessonVersionDirectory(lessonId: manifest.lessonID, version: manifest.packageVersion)
         let lessonParentDir = targetVersionDir.deletingLastPathComponent()
         try FileManager.default.createDirectory(at: lessonParentDir, withIntermediateDirectories: true)
 
@@ -179,11 +266,8 @@ public final class LessonStore: ObservableObject {
     // MARK: - DEV MODE: Load from Files App Folder
 
     /// DEV MODE: Ingests a complete lesson package folder directly from the Files app.
-    ///
-    /// Reads `manifest.json`, validates its files, and installs the package locally
-    /// into `Application Support/Lessons/{lesson_id}/v{package_version}/`.
     @discardableResult
-    public func importPackageFromFolder(folderURL: URL) throws -> LessonManifest {
+    public func importPackageFromFolder(folderURL: URL) throws -> LessonPackage.Manifest {
         let isSecurityScoped = folderURL.startAccessingSecurityScopedResource()
         defer {
             if isSecurityScoped { folderURL.stopAccessingSecurityScopedResource() }
@@ -195,9 +279,9 @@ public final class LessonStore: ObservableObject {
         }
 
         let manifestData = try Data(contentsOf: manifestURL)
-        let manifest = try JSONDecoder().decode(LessonManifest.self, from: manifestData)
+        let manifest = try JSONDecoder().decode(LessonPackage.Manifest.self, from: manifestData)
 
-        let targetDir = lessonVersionDirectory(lessonId: manifest.lesson_id, version: manifest.package_version)
+        let targetDir = lessonVersionDirectory(lessonId: manifest.lessonID, version: manifest.packageVersion)
         let lessonParentDir = targetDir.deletingLastPathComponent()
         try FileManager.default.createDirectory(at: lessonParentDir, withIntermediateDirectories: true)
 
@@ -225,21 +309,21 @@ public final class LessonStore: ObservableObject {
 
         // Add or replace entry in catalog
         let newItem = CatalogItem(
-            course_id: "dev-course-\(manifest.course_slug)",
-            course_slug: manifest.course_slug,
-            course_title: manifest.course_slug.replacingOccurrences(of: "-", with: " ").capitalized,
-            lesson_id: manifest.lesson_id,
-            lesson_slug: manifest.lesson_slug,
+            course_id: "dev-course-\(manifest.courseSlug)",
+            course_slug: manifest.courseSlug,
+            course_title: manifest.courseSlug.replacingOccurrences(of: "-", with: " ").capitalized,
+            lesson_id: manifest.lessonID,
+            lesson_slug: manifest.lessonSlug,
             lesson_title: manifest.title,
             position: 1,
-            package_version: manifest.package_version,
-            storage_prefix: "dev/\(manifest.course_slug)/\(manifest.lesson_slug)/v\(manifest.package_version)",
+            package_version: manifest.packageVersion,
+            storage_prefix: "dev/\(manifest.courseSlug)/\(manifest.lessonSlug)/v\(manifest.packageVersion)",
             manifest: manifest,
-            pose_model_sha256: manifest.extractor?.pose_model_sha256,
+            pose_model_sha256: manifest.extractor.poseModelSha256,
             published_at: ISO8601DateFormatter().string(from: Date())
         )
 
-        catalog.removeAll { $0.lesson_id == manifest.lesson_id && $0.package_version == manifest.package_version }
+        catalog.removeAll { $0.lesson_id == manifest.lessonID && $0.package_version == manifest.packageVersion }
         catalog.insert(newItem, at: 0)
         saveCatalogCache()
 
@@ -263,24 +347,222 @@ public final class LessonStore: ObservableObject {
     }
 
     private func seedDefaultCatalog() {
-        // Built-in seed representing Bollywood Basics / Filmi Routine 1
-        let sampleManifest = LessonManifest.makeSampleFilmiManifest()
+        let sampleManifest = Self.makeSampleFilmiManifest()
         let seedItem = CatalogItem(
             course_id: "course-bollywood-basics",
             course_slug: "bollywood-basics",
             course_title: "Bollywood Basics",
-            lesson_id: sampleManifest.lesson_id,
-            lesson_slug: sampleManifest.lesson_slug,
+            lesson_id: sampleManifest.lessonID,
+            lesson_slug: sampleManifest.lessonSlug,
             lesson_title: sampleManifest.title,
             position: 1,
             package_version: 1,
             storage_prefix: "lesson-packages/bollywood-basics/img4941-routine/v1",
             manifest: sampleManifest,
-            pose_model_sha256: sampleManifest.extractor?.pose_model_sha256,
+            pose_model_sha256: sampleManifest.extractor.poseModelSha256,
             published_at: "2026-10-31T00:00:00Z"
         )
         self.catalog = [seedItem]
     }
+
+    public static func makeSampleFilmiManifest() -> LessonPackage.Manifest {
+        let json = sampleManifestJSON
+        return try! JSONDecoder().decode(LessonPackage.Manifest.self, from: json.data(using: .utf8)!)
+    }
+
+    public static let sampleManifestJSON = """
+    {
+      "schema": "groove.lesson/1",
+      "lesson_id": "b6f14c2e-7d0a-4b8e-9c31-5a2f0e8d4b17",
+      "course_slug": "bollywood-basics",
+      "lesson_slug": "img4941-routine",
+      "package_version": 1,
+      "title": "Filmi Routine 1",
+      "requires": {
+        "engine_major": 2,
+        "skeleton": "groove.canonical/1"
+      },
+      "extractor": {
+        "pose_model": "pose_landmarker_full",
+        "pose_model_sha256": "5134a3aad27a58b93da0088d431f366da362b44e3ccfbe3462b3827a839011b1",
+        "mediapipe_python": "1.2.0",
+        "running_mode": "VIDEO",
+        "num_poses": 1
+      },
+      "video": {
+        "file": "video.mp4",
+        "duration_s": 16.33,
+        "fps": 30,
+        "width": 720,
+        "height": 1280,
+        "mirrored": false,
+        "default_display_flip": true
+      },
+      "poster": "poster.jpg",
+      "reference": {
+        "file": "reference_pose.json",
+        "frame_count": 490
+      },
+      "beat_grid": {
+        "bpm": 112.5,
+        "anchor_s": 0.53,
+        "source": "author_confirmed",
+        "detector": "beat_this_small_cpu",
+        "beats": [
+          { "t": 0.53, "phrase": 1, "count": 1 },
+          { "t": 1.063, "phrase": 1, "count": 2 },
+          { "t": 1.597, "phrase": 1, "count": 3 },
+          { "t": 2.13, "phrase": 1, "count": 4 },
+          { "t": 2.663, "phrase": 1, "count": 5 },
+          { "t": 3.197, "phrase": 1, "count": 6 },
+          { "t": 3.73, "phrase": 1, "count": 7 },
+          { "t": 4.263, "phrase": 1, "count": 8 },
+          { "t": 4.797, "phrase": 2, "count": 1 },
+          { "t": 5.33, "phrase": 2, "count": 2 },
+          { "t": 5.863, "phrase": 2, "count": 3 },
+          { "t": 6.397, "phrase": 2, "count": 4 },
+          { "t": 6.93, "phrase": 2, "count": 5 },
+          { "t": 7.463, "phrase": 2, "count": 6 },
+          { "t": 7.997, "phrase": 2, "count": 7 },
+          { "t": 8.53, "phrase": 2, "count": 8 },
+          { "t": 9.063, "phrase": 3, "count": 1 },
+          { "t": 9.597, "phrase": 3, "count": 2 },
+          { "t": 10.13, "phrase": 3, "count": 3 },
+          { "t": 10.663, "phrase": 3, "count": 4 },
+          { "t": 11.197, "phrase": 3, "count": 5 },
+          { "t": 11.73, "phrase": 3, "count": 6 },
+          { "t": 12.263, "phrase": 3, "count": 7 },
+          { "t": 12.797, "phrase": 3, "count": 8 },
+          { "t": 13.33, "phrase": 4, "count": 1 },
+          { "t": 13.863, "phrase": 4, "count": 2 },
+          { "t": 14.397, "phrase": 4, "count": 3 },
+          { "t": 14.93, "phrase": 4, "count": 4 },
+          { "t": 15.463, "phrase": 4, "count": 5 },
+          { "t": 15.997, "phrase": 4, "count": 6 }
+        ]
+      },
+      "segments": [
+        {
+          "id": "A",
+          "title": "The Attitude Intro",
+          "start_s": 0.53,
+          "end_s": 4.8,
+          "teach_order": 1,
+          "difficulty": 2,
+          "focus": ["arms", "hands", "hips", "feet"],
+          "cues": [
+            "Right hand flicks by the right ear on 1-2-3-4",
+            "Left hip and knee pop out with each flick",
+            "Switch hands on 5-6, gather to the chest on 7-8"
+          ]
+        },
+        {
+          "id": "B",
+          "title": "Peek-a-Boo to Lateral Sweep",
+          "start_s": 4.8,
+          "end_s": 6.4,
+          "teach_order": 2,
+          "difficulty": 2,
+          "focus": ["arms", "hands"],
+          "cues": [
+            "Palms together over the nose on 1",
+            "Forearms fold and sweep across the chest to your left on 3"
+          ]
+        },
+        {
+          "id": "C",
+          "title": "The Hook Groove",
+          "start_s": 6.4,
+          "end_s": 9.07,
+          "teach_order": 3,
+          "difficulty": 4,
+          "focus": ["arms", "hips", "feet"],
+          "cues": [
+            "Heel-hip bounce on 5-6-7-8",
+            "Wrists roll by the left shoulder"
+          ],
+          "config_overrides": {
+            "scoring_thresholds": {
+              "gate": {
+                "timing_source": "hits"
+              }
+            }
+          }
+        },
+        {
+          "id": "D",
+          "title": "Shimmy, Crown Lotus and Finale",
+          "start_s": 9.07,
+          "end_s": 14.93,
+          "teach_order": 4,
+          "difficulty": 2,
+          "focus": ["arms", "hands", "torso"],
+          "cues": [
+            "Shoulder shimmy at the collarbone",
+            "Hands trace the face and meet overhead on 8",
+            "Open palms forward, then drop to rest"
+          ]
+        },
+        {
+          "id": "full",
+          "kind": "full_run",
+          "title": "Full Routine",
+          "start_s": 0.53,
+          "end_s": 14.93,
+          "teach_order": 5,
+          "difficulty": 3,
+          "focus": ["arms", "hands", "hips", "feet"],
+          "cues": ["A, B, C, D without stopping"]
+        }
+      ],
+      "windows": [
+        {
+          "kind": "clasp",
+          "start_s": 4.8,
+          "end_s": 5.87,
+          "mask": ["hand_shape"],
+          "tolerance_scale": {
+            "leftWrist": 2.0,
+            "rightWrist": 2.0
+          }
+        },
+        {
+          "kind": "clasp",
+          "start_s": 12.75,
+          "end_s": 13.65,
+          "mask": ["hand_shape"],
+          "tolerance_scale": {
+            "leftWrist": 2.0,
+            "rightWrist": 2.0
+          }
+        }
+      ],
+      "config_overrides": {
+        "scoring_thresholds": {
+          "shape": { "arm_weight": 0.35 },
+          "groove": { "pass_min_score": 0 }
+        }
+      },
+      "practice": {
+        "count_in_beats": 4,
+        "adaptive_speed": {
+          "min_rate": 0.6,
+          "start_rate": 0.7,
+          "max_rate": 1.0,
+          "step_up": 0.1,
+          "step_down": 0.05,
+          "promote_after": 2,
+          "demote_after": 2,
+          "unlock_next_at_rate": 0.8
+        }
+      },
+      "files": {
+        "video.mp4": "0000000000000000000000000000000000000000000000000000000000000000",
+        "reference_pose.json": "0000000000000000000000000000000000000000000000000000000000000000",
+        "poster.jpg": "0000000000000000000000000000000000000000000000000000000000000000"
+      }
+    }
+    """
 }
 
 // MARK: - Catalog Item Model
@@ -296,7 +578,7 @@ public struct CatalogItem: Codable, Identifiable, Equatable {
     public let position: Int?
     public let package_version: Int
     public let storage_prefix: String
-    public let manifest: LessonManifest?
+    public let manifest: LessonPackage.Manifest?
     public let pose_model_sha256: String?
     public let published_at: String?
 
@@ -310,7 +592,7 @@ public struct CatalogItem: Codable, Identifiable, Equatable {
         position: Int? = 1,
         package_version: Int = 1,
         storage_prefix: String,
-        manifest: LessonManifest? = nil,
+        manifest: LessonPackage.Manifest? = nil,
         pose_model_sha256: String? = nil,
         published_at: String? = nil
     ) {
@@ -326,236 +608,6 @@ public struct CatalogItem: Codable, Identifiable, Equatable {
         self.manifest = manifest
         self.pose_model_sha256 = pose_model_sha256
         self.published_at = published_at
-    }
-}
-
-// MARK: - Manifest Codable Mirror
-
-/// Minimal local Codable mirror of `schemas/lesson_package.schema.json`
-/// used by `LessonStore` and `LessonPlayerView` until M1A `GrooveCore.LessonPackage` integrates.
-public struct LessonManifest: Codable, Equatable {
-    public let schema: String
-    public let lesson_id: String
-    public let course_slug: String
-    public let lesson_slug: String
-    public let package_version: Int
-    public let title: String
-    public let requires: RequiresInfo?
-    public let extractor: ExtractorInfo?
-    public let video: VideoInfo
-    public let poster: String?
-    public let reference: ReferenceInfo?
-    public let beat_grid: BeatGridInfo
-    public let segments: [SegmentInfo]
-    public let windows: [WindowInfo]?
-    public let practice: PracticeInfo
-    public let files: [String: String]
-
-    public struct RequiresInfo: Codable, Equatable {
-        public let engine_major: Int
-        public let skeleton: String
-
-        public init(engine_major: Int, skeleton: String) {
-            self.engine_major = engine_major
-            self.skeleton = skeleton
-        }
-    }
-
-    public struct ExtractorInfo: Codable, Equatable {
-        public let pose_model: String
-        public let pose_model_sha256: String
-        public let hand_model: String?
-        public let hand_model_sha256: String?
-        public let mediapipe_python: String
-        public let running_mode: String
-        public let num_poses: Int
-
-        public init(
-            pose_model: String,
-            pose_model_sha256: String,
-            hand_model: String? = nil,
-            hand_model_sha256: String? = nil,
-            mediapipe_python: String,
-            running_mode: String = "VIDEO",
-            num_poses: Int = 1
-        ) {
-            self.pose_model = pose_model
-            self.pose_model_sha256 = pose_model_sha256
-            self.hand_model = hand_model
-            self.hand_model_sha256 = hand_model_sha256
-            self.mediapipe_python = mediapipe_python
-            self.running_mode = running_mode
-            self.num_poses = num_poses
-        }
-    }
-
-    public struct VideoInfo: Codable, Equatable {
-        public let file: String
-        public let duration_s: Double
-        public let fps: Double
-        public let width: Int
-        public let height: Int
-        public let mirrored: Bool
-        public let default_display_flip: Bool
-
-        public init(
-            file: String,
-            duration_s: Double,
-            fps: Double,
-            width: Int,
-            height: Int,
-            mirrored: Bool,
-            default_display_flip: Bool
-        ) {
-            self.file = file
-            self.duration_s = duration_s
-            self.fps = fps
-            self.width = width
-            self.height = height
-            self.mirrored = mirrored
-            self.default_display_flip = default_display_flip
-        }
-    }
-
-    public struct ReferenceInfo: Codable, Equatable {
-        public let file: String
-        public let frame_count: Int
-
-        public init(file: String, frame_count: Int) {
-            self.file = file
-            self.frame_count = frame_count
-        }
-    }
-
-    public struct BeatGridInfo: Codable, Equatable {
-        public let bpm: Double
-        public let anchor_s: Double
-        public let source: String
-        public let detector: String?
-        public let beats: [Beat]
-
-        public init(bpm: Double, anchor_s: Double, source: String, detector: String? = nil, beats: [Beat]) {
-            self.bpm = bpm
-            self.anchor_s = anchor_s
-            self.source = source
-            self.detector = detector
-            self.beats = beats
-        }
-
-        public struct Beat: Codable, Equatable, Identifiable {
-            public var id: Double { t }
-            public let t: Double
-            public let phrase: Int
-            public let count: Int
-
-            public init(t: Double, phrase: Int, count: Int) {
-                self.t = t
-                self.phrase = phrase
-                self.count = count
-            }
-        }
-    }
-
-    public struct SegmentInfo: Codable, Equatable, Identifiable {
-        public let id: String
-        public let kind: String?
-        public let title: String
-        public let start_s: Double
-        public let end_s: Double
-        public let teach_order: Int
-        public let difficulty: Int?
-        public let focus: [String]?
-        public let cues: [String]?
-        public let adaptive_speed: AdaptiveSpeedPolicy?
-
-        public init(
-            id: String,
-            kind: String? = nil,
-            title: String,
-            start_s: Double,
-            end_s: Double,
-            teach_order: Int,
-            difficulty: Int? = nil,
-            focus: [String]? = nil,
-            cues: [String]? = nil,
-            adaptive_speed: AdaptiveSpeedPolicy? = nil
-        ) {
-            self.id = id
-            self.kind = kind
-            self.title = title
-            self.start_s = start_s
-            self.end_s = end_s
-            self.teach_order = teach_order
-            self.difficulty = difficulty
-            self.focus = focus
-            self.cues = cues
-            self.adaptive_speed = adaptive_speed
-        }
-    }
-
-    public struct WindowInfo: Codable, Equatable {
-        public let kind: String
-        public let start_s: Double
-        public let end_s: Double
-        public let mask: [String]?
-        public let tolerance_scale: [String: Double]?
-
-        public init(
-            kind: String,
-            start_s: Double,
-            end_s: Double,
-            mask: [String]? = nil,
-            tolerance_scale: [String: Double]? = nil
-        ) {
-            self.kind = kind
-            self.start_s = start_s
-            self.end_s = end_s
-            self.mask = mask
-            self.tolerance_scale = tolerance_scale
-        }
-    }
-
-    public struct PracticeInfo: Codable, Equatable {
-        public let count_in_beats: Int
-        public let adaptive_speed: AdaptiveSpeedPolicy
-
-        public init(count_in_beats: Int, adaptive_speed: AdaptiveSpeedPolicy) {
-            self.count_in_beats = count_in_beats
-            self.adaptive_speed = adaptive_speed
-        }
-    }
-}
-
-// MARK: - Adaptive Speed Policy Model
-
-public struct AdaptiveSpeedPolicy: Codable, Equatable {
-    public var min_rate: Double
-    public var start_rate: Double
-    public var max_rate: Double
-    public var step_up: Double
-    public var step_down: Double
-    public var promote_after: Int
-    public var demote_after: Int
-    public var unlock_next_at_rate: Double
-
-    public init(
-        min_rate: Double = 0.6,
-        start_rate: Double = 0.7,
-        max_rate: Double = 1.0,
-        step_up: Double = 0.1,
-        step_down: Double = 0.05,
-        promote_after: Int = 2,
-        demote_after: Int = 2,
-        unlock_next_at_rate: Double = 0.8
-    ) {
-        self.min_rate = min_rate
-        self.start_rate = start_rate
-        self.max_rate = max_rate
-        self.step_up = step_up
-        self.step_down = step_down
-        self.promote_after = promote_after
-        self.demote_after = demote_after
-        self.unlock_next_at_rate = unlock_next_at_rate
     }
 }
 
@@ -575,130 +627,5 @@ public enum LessonStoreError: LocalizedError {
         case .downloadFailed(let reason):
             return "Failed to download lesson: \(reason)"
         }
-    }
-}
-
-// MARK: - Sample Generator for Dev / Offline Mode
-
-extension LessonManifest {
-    public static func makeSampleFilmiManifest() -> LessonManifest {
-        let bpm = 112.5
-        let anchor = 0.53
-        let beatPeriod = 60.0 / bpm
-        var beats: [BeatGridInfo.Beat] = []
-        for i in 0..<30 {
-            let t = anchor + Double(i) * beatPeriod
-            let phrase = (i / 8) + 1
-            let count = (i % 8) + 1
-            beats.append(BeatGridInfo.Beat(t: (t * 1000).rounded() / 1000, phrase: phrase, count: count))
-        }
-
-        let segments: [SegmentInfo] = [
-            SegmentInfo(
-                id: "A",
-                title: "The Attitude Intro",
-                start_s: 0.53,
-                end_s: 4.80,
-                teach_order: 1,
-                difficulty: 2,
-                focus: ["arms", "hands", "hips", "feet"],
-                cues: [
-                    "Right hand flicks by the right ear on 1-2-3-4",
-                    "Left hip and knee pop out with each flick",
-                    "Switch hands on 5-6, gather to the chest on 7-8"
-                ]
-            ),
-            SegmentInfo(
-                id: "B",
-                title: "Peek-a-Boo to Lateral Sweep",
-                start_s: 4.80,
-                end_s: 6.40,
-                teach_order: 2,
-                difficulty: 2,
-                focus: ["arms", "hands"],
-                cues: [
-                    "Palms together over the nose on 1",
-                    "Forearms fold and sweep across the chest to your left on 3"
-                ]
-            ),
-            SegmentInfo(
-                id: "C",
-                title: "The Hook Groove",
-                start_s: 6.40,
-                end_s: 9.07,
-                teach_order: 3,
-                difficulty: 4,
-                focus: ["arms", "hips", "feet"],
-                cues: [
-                    "Heel-hip bounce on 5-6-7-8",
-                    "Wrists roll by the left shoulder"
-                ]
-            ),
-            SegmentInfo(
-                id: "D",
-                title: "Shimmy, Crown Lotus and Finale",
-                start_s: 9.07,
-                end_s: 14.93,
-                teach_order: 4,
-                difficulty: 2,
-                focus: ["arms", "hands", "torso"],
-                cues: [
-                    "Shoulder shimmy at the collarbone",
-                    "Hands trace the face and meet overhead on 8",
-                    "Open palms forward, then drop to rest"
-                ]
-            ),
-            SegmentInfo(
-                id: "full",
-                kind: "full_run",
-                title: "Full Routine",
-                start_s: 0.53,
-                end_s: 14.93,
-                teach_order: 5,
-                difficulty: 3,
-                focus: ["arms", "hands", "hips", "feet"],
-                cues: [
-                    "A, B, C, D without stopping"
-                ]
-            )
-        ]
-
-        return LessonManifest(
-            schema: "groove.lesson/1",
-            lesson_id: "b6f14c2e-7d0a-4b8e-9c31-5a2f0e8d4b17",
-            course_slug: "bollywood-basics",
-            lesson_slug: "img4941-routine",
-            package_version: 1,
-            title: "Filmi Routine 1",
-            requires: RequiresInfo(engine_major: 2, skeleton: "groove.canonical/1"),
-            extractor: ExtractorInfo(
-                pose_model: "pose_landmarker_full",
-                pose_model_sha256: "5134a3aad27a58b93da0088d431f366da362b44e3ccfbe3462b3827a839011b1",
-                mediapipe_python: "1.2.0"
-            ),
-            video: VideoInfo(
-                file: "video.mp4",
-                duration_s: 16.33,
-                fps: 30.0,
-                width: 720,
-                height: 1280,
-                mirrored: false,
-                default_display_flip: true
-            ),
-            poster: "poster.jpg",
-            reference: ReferenceInfo(file: "reference_pose.json", frame_count: 490),
-            beat_grid: BeatGridInfo(bpm: bpm, anchor_s: anchor, source: "author_confirmed", beats: beats),
-            segments: segments,
-            windows: [
-                WindowInfo(kind: "clasp", start_s: 4.80, end_s: 5.87, mask: ["hand_shape"], tolerance_scale: ["leftWrist": 2.0, "rightWrist": 2.0]),
-                WindowInfo(kind: "clasp", start_s: 12.75, end_s: 13.65, mask: ["hand_shape"], tolerance_scale: ["leftWrist": 2.0, "rightWrist": 2.0])
-            ],
-            practice: PracticeInfo(count_in_beats: 4, adaptive_speed: AdaptiveSpeedPolicy()),
-            files: [
-                "video.mp4": "0000000000000000000000000000000000000000000000000000000000000000",
-                "reference_pose.json": "0000000000000000000000000000000000000000000000000000000000000000",
-                "poster.jpg": "0000000000000000000000000000000000000000000000000000000000000000"
-            ]
-        )
     }
 }
