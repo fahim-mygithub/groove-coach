@@ -83,8 +83,14 @@ final class CanonicalSkeletonTests: XCTestCase {
     }
 
     private func hand(wristImage: [Double], offset: Double) -> CanonicalSkeleton.Hand {
-        let world = (0..<21).map { [offset + Double($0) * 0.01, 0.1 * Double($0), -0.02 * Double($0)] }
-        let image = (0..<21).map { [wristImage[0] + 0.001 * Double($0), wristImage[1], 0.0] }
+        let world: [[Double]] = (0..<21).map { (i: Int) -> [Double] in
+            let d = Double(i)
+            return [offset + d * 0.01, 0.1 * d, -0.02 * d]
+        }
+        let image: [[Double]] = (0..<21).map { (i: Int) -> [Double] in
+            let d = Double(i)
+            return [wristImage[0] + 0.001 * d, wristImage[1], 0.0]
+        }
         return CanonicalSkeleton.Hand(worldLandmarks: world, imageLandmarks: image)
     }
 
