@@ -21,8 +21,8 @@ public final class LessonStore: ObservableObject {
     private let catalogCacheURL: URL
     private let supabaseClient: SupabaseClient
 
-    public init(supabaseClient: SupabaseClient = .shared) {
-        self.supabaseClient = supabaseClient
+    public init(supabaseClient: SupabaseClient? = nil) {
+        self.supabaseClient = supabaseClient ?? SupabaseClient.shared
 
         let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
         let base = appSupport.appendingPathComponent("Lessons", isDirectory: true)
