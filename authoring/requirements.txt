@@ -1,0 +1,6 @@
+# Pinned authoring pipeline dependencies (spec §2.1, WO-1C)
+absl-py==2.5.1
+mediapipe==1.2.0
+numpy==2.2.5
+opencv-contrib-python==5.0.0.93
+scipy==1.15.3
