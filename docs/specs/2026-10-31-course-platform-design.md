@@ -1,6 +1,6 @@
 # Groove Coach course platform: design spec
 
-Date: 2026-10-31. Status: proposed, waiting for owner sign-off on §7.
+Date: 2026-10-31. Status: approved. The owner's answers to §7 are in §8 (2026-10-31), and §8 wins wherever older text disagrees.
 Code baseline: branch `nirvana-integrate/asl-features`. Every repo path below exists on that branch unless marked **(new)**.
 Inputs: the four order reports (repo breakdown, learner-side references, authoring references, IMG_4941 breakdown). These are orchestration files, not repo files.
 
@@ -12,7 +12,7 @@ Owner requirements, in the owner's words:
 - "I would like to start compositing videos that can eventually be built into a full course."
 - "Before we continue with this build do a validation run … Once design spec is ironed out begin building."
 
-**v1 goal.** One course, built from `IMG_4941.mov`, playable end to end on the owner's iPhone. The app downloads the lesson, plays the teacher video in teaching order (Segment C, A, B, D, then a full run), and pose-matches the learner's front camera at 0.75x and 1.0x. It scores every take and shows what to fix.
+**v1 goal.** One course, built from `IMG_4941.mov`, playable end to end on the owner's iPhone. The app downloads the lesson, plays the teacher video in teaching order (Segment A, B, C, D, then a full run), and pose-matches the learner's front camera. Playback starts slowed down and speeds up to 1.0x as the learner's takes improve (adaptive rate, §8 Q6). It scores every take and shows what to fix.
 
 **Goals**
 1. Authoring happens off the phone. A Python pipeline turns a video into a versioned **lesson package**: video, reference pose track, beat grid, 8-count segment cuts, tolerances, and occlusion and mirroring metadata.
@@ -35,7 +35,7 @@ BACKEND (Supabase)                       ▼
  Postgres: courses, lessons, lesson_versions, attempts, profiles  |  Storage: lesson-packages (private)
                                          │ email-OTP JWT, REST + Storage GET
 APP (iPhone)                             ▼
- LessonStore (download, sha256 verify, cache) ─► LessonPlayer (AVPlayer, beat grid, 0.75x, mirror)
+ LessonStore (download, sha256 verify, cache) ─► LessonPlayer (AVPlayer, beat grid, adaptive rate, mirror)
    └─► take: front camera ─► MediaPipe LIVE_STREAM (live limb colours + streak, not graded)
                           └─► recorded take ─► MediaPipe VIDEO mode ─► scoreAttempt vs sliced reference ─► results
 ```
@@ -80,35 +80,46 @@ lesson-packages/{course_slug}/{lesson_slug}/v{package_version}/
   "extractor": {
     "pose_model": "pose_landmarker_full", "pose_model_sha256": "5134a3aa…11b1",
     "hand_model": "hand_landmarker", "hand_model_sha256": "<pinned in M2>",
-    "mediapipe_python": "<x.y.z>", "running_mode": "VIDEO", "num_poses": 1
+    "mediapipe_python": "1.2.0", "running_mode": "VIDEO", "num_poses": 1
   },
   "video": { "file": "video.mp4", "duration_s": 16.33, "fps": 30, "width": 720, "height": 1280,
              "mirrored": false, "default_display_flip": true },
+  "poster": "poster.jpg",
   "reference": { "file": "reference_pose.json", "frame_count": 490 },
   "beat_grid": { "bpm": 112.5, "anchor_s": 0.53, "source": "author_confirmed", "detector": "beat_this_small_cpu",
                  "beats": [ { "t": 0.53, "phrase": 1, "count": 1 }, { "t": 1.063, "phrase": 1, "count": 2 } ] },
   "segments": [
-    { "id": "C", "title": "The Hook Groove", "start_s": 6.40, "end_s": 9.07, "teach_order": 1,
+    { "id": "A", "title": "The Attitude Intro", "start_s": 0.53, "end_s": 4.80, "teach_order": 1, "difficulty": 2 },
+    { "id": "B", "title": "Peek-a-Boo to Lateral Sweep", "start_s": 4.80, "end_s": 6.40, "teach_order": 2, "difficulty": 2 },
+    { "id": "C", "title": "The Hook Groove", "start_s": 6.40, "end_s": 9.07, "teach_order": 3,
       "difficulty": 4, "focus": ["arms", "hips", "feet"],
       "cues": ["Heel-hip bounce on 5-6-7-8", "Wrists roll by the left shoulder"],
-      "config_overrides": { "scoring_thresholds": { "gate": { "timing_source": "hits" } } } }
+      "config_overrides": { "scoring_thresholds": { "gate": { "timing_source": "hits" } } } },
+    { "id": "D", "title": "Shimmy, Crown Lotus and Finale", "start_s": 9.07, "end_s": 14.93, "teach_order": 4, "difficulty": 2 },
+    { "id": "full", "kind": "full_run", "title": "Full Routine", "start_s": 0.53, "end_s": 14.93, "teach_order": 5 }
   ],
   "windows": [
     { "kind": "clasp", "start_s": 4.80, "end_s": 5.87, "mask": ["hand_shape"], "tolerance_scale": { "leftWrist": 2.0, "rightWrist": 2.0 } },
     { "kind": "clasp", "start_s": 12.75, "end_s": 13.65, "mask": ["hand_shape"], "tolerance_scale": { "leftWrist": 2.0, "rightWrist": 2.0 } }
   ],
   "config_overrides": { "scoring_thresholds": { "shape": { "arm_weight": 0.35 }, "groove": { "pass_min_score": 0 } } },
-  "practice": { "speeds": [0.75, 1.0], "count_in_beats": 4 },
+  "practice": { "count_in_beats": 4,
+                "adaptive_speed": { "min_rate": 0.6, "start_rate": 0.7, "max_rate": 1.0, "step_up": 0.1, "step_down": 0.05,
+                                    "promote_after": 2, "demote_after": 2, "unlock_next_at_rate": 0.8 } },
   "files": { "video.mp4": "<sha256>", "reference_pose.json": "<sha256>", "poster.jpg": "<sha256>" }
 }
 ```
 
-JSON Schema `schemas/lesson_package.schema.json` **(new)** enforces:
+The full example is `fixtures/lessons/example_manifest.json`. A segment may carry its own `adaptive_speed`, which replaces `practice.adaptive_speed` for that segment. Segment D ends on beat 27 (14.93 s), not at 14.80 s where the dancing ends, because 14.80 s is 130 ms off the beat grid.
+
+JSON Schema `schemas/lesson_package.schema.json` **(new)** describes the structure. `groove_eval/lesson_package.validate_manifest` checks that schema with a stdlib validator, because linux-ci has no `jsonschema`. It then checks these rules:
 - `schema` is const `groove.lesson/1`; `package_version` is an integer ≥1.
 - Every window lies inside `[0, duration_s]`, and segment boundaries sit within ±40 ms of a beat.
 - `beats[].t` is strictly increasing; `pose_model_sha256` matches `^[0-9a-f]{64}$`.
 - `files` covers the whole prefix.
-- `config_overrides` keys exist in `config/groove_config.json` or are one of the three new keys in §3.2.
+- `config_overrides` keys exist in `config/groove_config.json` with the same JSON type, or are one of the two new config keys in §3.2: `shape.arm_weight` and `gate.timing_source`. (`windows`, the third §3.2 addition, is a manifest field.)
+- Segment ids are unique, and `teach_order` runs 1..N: A, B, C, D, full.
+- In every `adaptive_speed`: `0.5 ≤ min_rate ≤ start_rate ≤ max_rate ≤ 1.0`, and `min_rate ≤ unlock_next_at_rate ≤ max_rate`.
 
 **Versioning.** `schema` changes only on a breaking format change. `package_version` increments on every republish, including tuning-only ones. Published prefixes are never overwritten. If `requires.engine_major` or `pose_model_sha256` differs from what the app bundles, the app plays the lesson but refuses to grade it ("update the app"): poses from different models are never compared.
 
@@ -149,7 +160,11 @@ View `catalog`: published courses → lessons → latest published `lesson_versi
   - 4 count-in clicks (existing `Metronome.swift`) play over the paused frame.
   - Then `setRate(rate, time: segment.start_s, atHostTime:)` starts the video on the host clock. That gives the take an exact host-time → media-time map, replacing the metronome-only timeline in `PracticeView.swift`.
   - Boundary time observers on `beat_grid` drive a "1 … 8" counter. Segment loops seek back to the start.
-- **0.75x.** `rate = 0.75` with a pitch-preserving `audioTimePitchAlgorithm`. Grading stays in wall-clock time: the reference slice is stretched (`t/rate`, `bpm·rate`, `speed_pct = 75`), so `scoreAttempt` and its ms thresholds are unchanged.
+- **Adaptive rate (§8 Q6).** Each take plays at the rate that `next_rate(policy, history)` returns for its segment.
+  - A segment starts at `start_rate` (0.7x). After a run of passing or failing takes, the rate moves up or down one step, within `[min_rate, 1.0]`.
+  - Playback uses a pitch-preserving `audioTimePitchAlgorithm`.
+  - Grading stays in wall-clock time. The reference slice is rebased to the segment start and then stretched (`t/rate`, `bpm·rate`, `speed_pct = round(100·rate)`). So `scoreAttempt` and its ms thresholds are unchanged at any rate.
+  - The learner can override the offered rate. A take at another rate moves the ladder to that rate.
 - **Live vs post-take.** The **post-take score is authoritative.** The recorded take is re-extracted in MediaPipe `VIDEO` mode and scored with `scoreAttempt`. That is today's "Analyzing take…" flow and stays on the parity-tested path; segments are 1.6–5.7 s, so it is quick. **Live** runs MediaPipe `LIVE_STREAM` at ≥15 fps only for limb colours and a streak meter, and is never graded.
 - **Latency.** `audio_latency_ms` comes from `Metronome.outputLatencyMs`. A one-time clap check uses the existing `verifyClapSync`. Bluetooth routes get a warning.
 
@@ -247,14 +262,15 @@ The reference is extracted on Linux, which has no Vision. Matching hand shapes w
   - A left/right-swapped copy fails shape on Segment A (the asymmetric ear flick).
   - Owner approves the overlay.
 - **V2, cross-extractor (device):** device `VIDEO`-mode frames of IMG_4941 vs the server track. Pass: mean per-joint distance ≤2 cm (proposed bar) and shape ≥95.
-- **V3, sync (device):** clap-on-beat |offset| ≤40 ms on the speaker at 1.0x and 0.75x.
+- **V3, sync (device):** clap-on-beat |offset| ≤40 ms on the speaker at 1.0x, at `start_rate` (0.7x) and at `min_rate` (0.6x).
 - **V4, first on-device tuning session** (owner and dancer, ~90 min):
   - Setup: portrait at waist height, 2.5–3 m away, full body in frame, even light.
   - Run V2 and V3 first.
-  - Per segment (C, A, B, D) and speed, record 3 good-faith takes plus deliberate errors: half a beat late, wrong arm side, half-amplitude arms, standing still, partly out of frame.
+  - Per segment in teaching order (A, B, C, D), record 3 good-faith takes at each of two pinned rates, 0.7x (`start_rate`) and 1.0x. Also record deliberate errors: half a beat late, wrong arm side, half-amplitude arms, standing still, partly out of frame. Rates stay pinned so pass rates compare.
+  - Then run one segment with the adaptive policy on, and log every offered rate.
   - Export the attempt bundles via the share sheet. `groove_eval/tune_report.py` **(new)** prints pass rates and suggested threshold moves.
-  - **Exit:** ≥2 of 3 good-faith takes pass per segment and speed. Every deliberate error fails with the right `top_issue`. Live and graded agree on the worst limb in ≥4 of 5 takes.
-  - Tuned values ship as `config_overrides` in package v2, so the global config and parity snapshot stay put. A receipt records the session.
+  - **Exit:** ≥2 of 3 good-faith takes pass per segment and rate. Every deliberate error fails with the right `top_issue`. Live and graded agree on the worst limb in ≥4 of 5 takes. The adaptive run reaches `unlock_next_at_rate` within 6 good-faith takes.
+  - Tuned values ship as `config_overrides` in package v2, so the global config and parity snapshot stay put. Policy changes, such as a different `start_rate`, ship in v2 as per-segment `adaptive_speed`. A receipt records the session.
 
 ## 6. Build plan
 
@@ -308,7 +324,7 @@ Notes on the tables:
 |---|---|---|---|
 | WO-4A replay-streak | `FeedbackViews.swift`, `ReplayView.swift` (new) | 0.5x side-by-side replay of the weakest beats; live streak meter. | M |
 | WO-4B progress-sync | `ProgressSync.swift` (new), `supabase/migrations/0002_progress.sql` (new) | Attempts upload online and queue offline; RLS holds. | S |
-| WO-4C course-flow | `CourseListView.swift`, `LessonPlayerView.swift` (from 1E) | Order C→A→B→D→full; each segment unlocks on a 0.75x pass. | M |
+| WO-4C course-flow | `CourseListView.swift`, `LessonPlayerView.swift` (from 1E), `AdaptiveSpeed.swift`, `AdaptiveSpeedTests.swift` (core, new: Swift port of `next_rate`) | Order A→B→C→D→full, read from `teach_order`. Each segment starts at its policy's `start_rate` and follows `next_rate`; the Swift port matches the vectors in `tests/test_lesson_package.py`. The next segment unlocks after one pass at or above `unlock_next_at_rate`; 1.0x is never required to unlock. Take history is kept per lesson version and segment. | M |
 
 ## 7. Open questions for the owner
 
@@ -318,3 +334,52 @@ Notes on the tables:
 4. **Teaching order:** C (the hook) first, then A, B, D, full? *Recommend:* yes, and let V4 data reorder it.
 5. **Distribution:** paid Apple Developer account (TestFlight), or Sideloadly re-signed every 7 days? *Recommend:* pay before V4 if more than one phone is involved; otherwise Sideloadly.
 6. **Pass bar:** should segments gate progress? *Recommend:* unlock the next segment after one 0.75x pass, and never gate the 1.0x run.
+
+## 8. Owner decisions (2026-10-31)
+
+The owner answered §7 on 2026-10-31. Quoted as given:
+
+> "This is internal tested and yes, 2 proabbly flipped the phone will be facing you. 3. no and the point is to extrapolate the body. I saw some hugging face models be able to extrapolate as well so maybe runa research run with agy to validate. 4. no go in order. 5 dieloadly for now. for the gating progress be intelegent maybe a slowewd down version as the app access your improvements it goes faster."
+
+These decisions override older text in §1–§6. Where a line still mentions 0.75x, a C-first order or extra takes (for example §3.4 "0.75x stretch", R3, R7, WO-1E, WO-2B), read it as: a stretch at any policy rate, the A→D order, and a single take.
+
+**Q1, rights.** IMG_4941 is internal test footage, and the dancer has agreed. The `lesson-packages` bucket stays private. Pose data derived from IMG_4941 **may** go in git. The first such file is `fixtures/mediapipe_sample_frames.json`, and `fixtures/img4941_reference.json` (WO-3A) is allowed. The video itself stays out of git.
+
+**Q2, default view.** As recommended in §2.2: the teacher video is flipped (mirror) by default, the phone faces the learner, and an "as filmed" toggle is available.
+
+**Q3, extra takes.** No more takes. The goal is to *extrapolate the body* from the single take. A separate research order (body-extrapolation) will study 3D body recovery and retargeting. It covers single-take tolerances (R3) and differences between the dancer's and the learner's proportions. It is not designed here. The contract stays open for it:
+- Canonical frames (§3.1) are plain root-relative Cartesian joint positions in metres. They come with a fixed bone tree, `CANONICAL_BONES` in `groove_eval/canonical_skeleton.py`.
+- A later retarget step of the shape `canonical frame → canonical frame` (for example, bone-length normalization to the learner's `bone_lengths`) can run between the reference and the learner. It needs no change to the mapper, the manifest or the scoring engine.
+- The mapper does no per-person scaling, and `requires.skeleton` stays `groove.canonical/1`. If the research order adds a retargeted reference later, it will need an optional new manifest field.
+
+**Q4, teaching order.** Go in order: A → B → C → D → full. In the manifest that is `teach_order` 1–5, with the full run as a segment of `"kind": "full_run"`.
+
+**Q5, distribution.** Sideloadly for now (`.github/workflows/ios-sideload-ipa.yml`), re-signed every 7 days. TestFlight waits until more than one phone is involved.
+
+**Q6, gating: adaptive speed.** Fixed 0.75x and 1.0x gates are replaced by a playback-rate policy, `practice.adaptive_speed`, which a segment can override with its own `adaptive_speed`. The app starts each segment slowed down and speeds it up as the learner's takes improve.
+- The policy is a pure function, `next_rate(policy, history) -> (rate, unlocked)` in `groove_eval/lesson_package.py`. It replays the segment's takes from `start_rate`:
+  - `promote_after` consecutive passes step the rate up by `step_up`;
+  - `demote_after` consecutive fails step it down by `step_down`;
+  - rates are clamped to `[min_rate, max_rate]` and rounded to 0.01;
+  - a take at a rate the learner chose moves the ladder to that rate and restarts both streaks.
+- The next segment unlocks after one passing take at a rate of at least `unlock_next_at_rate`, and stays unlocked. 1.0x is never required to unlock.
+- `slice_reference` and `stretch` accept any rate in `[min_rate, max_rate]`, or `[0.5, 1.0]` without a policy. Scoring at rate r uses `t/r` and `bpm·r` (§2.4).
+- The Swift port of `next_rate` comes in M1 (WO-1A, `LessonPackage.swift`) and is used by WO-4C.
+
+| Key | Default | Why |
+|---|---|---|
+| `min_rate` | 0.6 | The floor. At 0.6x, 112.5 BPM becomes 67.5 BPM, which still feels like a pulse. Below 0.6, pitch-preserved audio smears, and hit energy drops further under `moving_threshold` (R7: velocity scales with rate). The schema's hard floor is 0.5, the lowest AVPlayer rate we would ship. |
+| `start_rate` | 0.7 | Slow enough for arm-led vocabulary that is new to the learner. It sits one `step_down` above the floor, so a struggling learner still has a slower rung. |
+| `max_rate` | 1.0 | The dancer's tempo. Faster than 1.0 is not a learning aid. |
+| `step_up` | 0.1 | Three promotions take the learner from 0.7 to 1.0. That is at least 6 passing takes, which is 1–4 minutes for 1.6–5.9 s segments. |
+| `step_down` | 0.05 | Half of `step_up`, so a bad pair of takes costs less progress than a good pair earns. This avoids bouncing between rungs. |
+| `promote_after` | 2 | Two passes in a row show consistency, not luck. This matches the V4 bar of ≥2 of 3 good-faith takes. |
+| `demote_after` | 2 | One failed take is normal noise, so it does not slow the learner down. |
+| `unlock_next_at_rate` | 0.8 | Replaces §7's "one 0.75x pass". The learner must have been promoted once (two passes at 0.7) and then pass at 0.8. Learners keep moving through the course while 1.0x stays a goal. |
+
+**Contract notes from WO-0 (2026-10-31).**
+- **Axes.** The mapper keeps MediaPipe's x and flips y and z: `(x, y, z) → (x, −y, −z)`, the same flip as `visionAxes` in `FootKeypointProvider.swift`. On a camera-facing dancer, +x is image right, which is the dancer's left. +z points toward the camera. This is a proper rotation, so `HandStyling` palm normals keep their meaning. The synthetic golden and feature fixtures place `leftHip` at −x, as if the dancer were seen from behind. That is harmless because both sides of a comparison go through the same mapper. It does mean the left/right words in `joint_tolerance` hints are camera-relative for real data. WO-1B or WO-2B should phrase those hints for the learner's view.
+- **Confidences** are the visibility values, clamped to [0, 1]. A synthesized joint takes the minimum visibility of its sources.
+- **Hands.** HandLandmarker results are assigned to the nearest pose wrist in pixel space (normalized x scaled by width/height), never by the handedness label. With two or more hands, the pairing with the smallest total distance wins. Each hand is placed so that landmark 0 sits on its pose wrist.
+- **Slicing.** A slice keeps frames within ±½ beat of the segment, rebased so t = 0 at `start_s`. It grades the beats in `[start_s − 40 ms, end_s − 40 ms)`, so a boundary beat is graded only once. With these rules A, B, C, D and full have 8, 3, 5, 11 and 27 graded beats.
+- **Fixture.** `fixtures/mediapipe_sample_frames.json` holds real MediaPipe output, not a synthetic sample. It was produced with mediapipe 1.2.0 (Python, CPU delegate, `VIDEO` mode, `num_poses=1`) and `pose_landmarker_full`, sha256 `5134a3aa…11b1`. It covers 10 frames of IMG_4941 (video sha256 `0f8083f9…124e`), and `expected_canonical` is the parity target for the Swift mapper.
