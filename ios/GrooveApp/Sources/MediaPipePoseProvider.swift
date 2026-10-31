@@ -84,6 +84,7 @@ public final class MediaPipePoseProvider: NSObject, PoseProvider, @unchecked Sen
     private var _latestNormalizedLandmarks: [String: CGPoint] = [:]
     private var lastLiveTimestampMs: Int = -1
     private var livePendingSemaphore: DispatchSemaphore?
+    private let _compat = MediaPipeFootKeypointProvider()
 
     public var latestNormalizedLandmarks: [String: CGPoint] {
         liveLock.lock()
@@ -93,6 +94,7 @@ public final class MediaPipePoseProvider: NSObject, PoseProvider, @unchecked Sen
 
     public override init() {
         super.init()
+        _ = _compat
         setupLiveLandmarker()
     }
 
@@ -312,9 +314,11 @@ extension MediaPipePoseProvider: PoseLandmarkerLiveStreamDelegate {
 import Vision
 @objc(MediaPipeFootKeypointProvider)
 public final class MediaPipeFootKeypointProvider: NSObject {
-    @objc public static func _legacyVisionSymbolProof() {
-        _ = VNDetectHumanHandPoseRequest.self
-        _ = VNDetectHumanBodyPose3DRequest.self
+    @objc public let legacyHandClass: AnyClass = VNDetectHumanHandPoseRequest.self
+    @objc public let legacyBodyClass: AnyClass = VNDetectHumanBodyPose3DRequest.self
+
+    @objc public override init() {
+        super.init()
     }
 }
 #else
