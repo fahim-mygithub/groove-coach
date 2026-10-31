@@ -23,10 +23,36 @@ jobs:
         run: |
           brew install xcodegen
 
+      - name: Fetch pinned MediaPipe pose model
+        run: bash ios/GrooveApp/Resources/fetch_pose_model.sh
+
+      - name: Fetch pinned MediaPipe hand model
+        run: |
+          # Same pin as authoring/extract_pose.py (HAND_MODEL_SHA256); the download is verified before use.
+          HAND_URL="https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task"
+          HAND_SHA256="fbc2a30080c3c557093b5ddfc334698132eb341044ccee322ccf8bcf3607cde1"
+          DEST="ios/GrooveApp/Resources/hand_landmarker.task"
+          curl -fsSL --retry 3 -o "$DEST" "$HAND_URL"
+          echo "$HAND_SHA256  $DEST" | shasum -a 256 -c -
+
+      - name: Verify pinned model hashes before archiving
+        run: |
+          echo "5134a3aad27a58b93da0088d431f366da362b44e3ccfbe3462b3827a839011b1  ios/GrooveApp/Resources/pose_landmarker_full.task" | shasum -a 256 -c -
+          echo "fbc2a30080c3c557093b5ddfc334698132eb341044ccee322ccf8bcf3607cde1  ios/GrooveApp/Resources/hand_landmarker.task" | shasum -a 256 -c -
+
       - name: Generate Xcode Project from ios/GrooveApp/project.yml
         working-directory: ios/GrooveApp
         run: |
           xcodegen generate
+
+      - name: Install MediaPipe pods
+        working-directory: ios/GrooveApp
+        run: |
+          if [ -f Podfile.lock ]; then
+            pod install --deployment
+          else
+            pod install
+          fi
 
       - name: Import Code-Signing Certificate & Provisioning Profile
         uses: apple-actions/import-codesign-certs@v2
@@ -48,7 +74,7 @@ jobs:
           BUNDLE_ID: ${{ secrets.APP_BUNDLE_ID }}
         run: |
           xcodebuild archive \
-            -project GrooveCoach.xcodeproj \
+            -workspace GrooveCoach.xcworkspace \
             -scheme GrooveCoach \
             -sdk iphoneos \
             -configuration Release \
@@ -61,6 +87,24 @@ jobs:
             -archivePath $RUNNER_TEMP/GrooveCoach.xcarchive \
             -exportOptionsPlist ExportOptions.plist \
             -exportPath $RUNNER_TEMP/export
+
+      - name: Verify MediaPipe, pinned models and Vision mode in the archived app
+        run: |
+          APP="$RUNNER_TEMP/GrooveCoach.xcarchive/Products/Applications/GrooveCoach.app"
+          test -d "$APP" || { echo "archived app missing"; exit 1; }
+          # Both pinned models must be bundled with the pinned bytes.
+          test -f "$APP/pose_landmarker_full.task" || { echo "pose model missing from archive"; exit 1; }
+          echo "5134a3aad27a58b93da0088d431f366da362b44e3ccfbe3462b3827a839011b1  $APP/pose_landmarker_full.task" | shasum -a 256 -c - || { echo "archived pose model sha256 mismatch"; exit 1; }
+          test -f "$APP/hand_landmarker.task" || { echo "hand model missing from archive (project.yml must list Resources/hand_landmarker.task)"; exit 1; }
+          echo "fbc2a30080c3c557093b5ddfc334698132eb341044ccee322ccf8bcf3607cde1  $APP/hand_landmarker.task" | shasum -a 256 -c - || { echo "archived hand model sha256 mismatch"; exit 1; }
+          # MediaPipe must be linked (not the canImport stub), and the Vision mode must match the flag.
+          strings -a "$APP/GrooveCoach" > "$RUNNER_TEMP/app-strings.txt"
+          nm -u "$APP/GrooveCoach" > "$RUNNER_TEMP/app-imports.txt"
+          grep -q "MPPPoseLandmarker" "$RUNNER_TEMP/app-strings.txt" || { echo "MediaPipe PoseLandmarker not linked"; exit 1; }
+          if grep -E "VNDetectHuman(Body|Hand)Pose" "$RUNNER_TEMP/app-imports.txt"; then
+            echo "Vision body/hand pose still linked"; exit 1
+          fi
+          echo "Vision body/hand pose requests absent"
 
       - name: Upload IPA to TestFlight via App Store Connect API (.p8)
         uses: apple-actions/upload-testflight-build@v1
