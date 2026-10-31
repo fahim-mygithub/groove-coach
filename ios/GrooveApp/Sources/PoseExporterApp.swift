@@ -9,16 +9,20 @@ import Vision
 @main
 struct GrooveCoachApp: App {
     @StateObject private var library = GrooveLibrary()
+    @StateObject private var lessonStore = LessonStore.shared
 
     var body: some Scene {
         WindowGroup {
             TabView {
+                CourseListView()
+                    .tabItem { Label("Courses", systemImage: "play.rectangle.on.rectangle") }
                 PracticeView()
                     .tabItem { Label("Practice", systemImage: "figure.dance") }
                 CalibrationOnboardingView()
                     .tabItem { Label("Calibrate", systemImage: "slider.horizontal.3") }
             }
             .environmentObject(library)
+            .environmentObject(lessonStore)
         }
     }
 }
