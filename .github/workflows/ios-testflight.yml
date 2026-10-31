@@ -23,10 +23,22 @@ jobs:
         run: |
           brew install xcodegen
 
+      - name: Fetch pinned MediaPipe pose model
+        run: bash ios/GrooveApp/Resources/fetch_pose_model.sh
+
       - name: Generate Xcode Project from ios/GrooveApp/project.yml
         working-directory: ios/GrooveApp
         run: |
           xcodegen generate
+
+      - name: Install MediaPipe pods
+        working-directory: ios/GrooveApp
+        run: |
+          if [ -f Podfile.lock ]; then
+            pod install --deployment
+          else
+            pod install
+          fi
 
       - name: Import Code-Signing Certificate & Provisioning Profile
         uses: apple-actions/import-codesign-certs@v2
@@ -48,7 +60,7 @@ jobs:
           BUNDLE_ID: ${{ secrets.APP_BUNDLE_ID }}
         run: |
           xcodebuild archive \
-            -project GrooveCoach.xcodeproj \
+            -workspace GrooveCoach.xcworkspace \
             -scheme GrooveCoach \
             -sdk iphoneos \
             -configuration Release \

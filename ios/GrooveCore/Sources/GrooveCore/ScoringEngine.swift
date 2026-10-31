@@ -141,13 +141,32 @@ public enum GrooveScoringEngine {
         public let groove: GrooveThresholds
         public let coverage: CoverageThresholds
         public let gate: GateThresholds
+        /// Optional sections (defaults apply when absent); see `ScoringFeatures.swift`.
+        public let smoothing: SmoothingConfig?
+        public let hits: HitTimingConfig?
+        public let joint_tolerance: JointToleranceThresholds?
+        public let hands: HandStylingThresholds?
 
-        public init(timing: TimingThresholds, shape: ShapeThresholds, groove: GrooveThresholds, coverage: CoverageThresholds, gate: GateThresholds) {
+        public init(
+            timing: TimingThresholds,
+            shape: ShapeThresholds,
+            groove: GrooveThresholds,
+            coverage: CoverageThresholds,
+            gate: GateThresholds,
+            smoothing: SmoothingConfig? = nil,
+            hits: HitTimingConfig? = nil,
+            joint_tolerance: JointToleranceThresholds? = nil,
+            hands: HandStylingThresholds? = nil
+        ) {
             self.timing = timing
             self.shape = shape
             self.groove = groove
             self.coverage = coverage
             self.gate = gate
+            self.smoothing = smoothing
+            self.hits = hits
+            self.joint_tolerance = joint_tolerance
+            self.hands = hands
         }
     }
 
@@ -167,11 +186,14 @@ public enum GrooveScoringEngine {
         public let t: Double
         public let joints: [String: [Double]]
         public let confidences: [String: Double]?
+        /// Optional 21-point hand landmarks (MediaPipe / Vision order) keyed "left" / "right", each point [x, y, z].
+        public let hands: [String: [[Double]]]?
 
-        public init(t: Double, joints: [String: [Double]], confidences: [String: Double]? = nil) {
+        public init(t: Double, joints: [String: [Double]], confidences: [String: Double]? = nil, hands: [String: [[Double]]]? = nil) {
             self.t = t
             self.joints = joints
             self.confidences = confidences
+            self.hands = hands
         }
     }
 
@@ -276,6 +298,12 @@ public enum GrooveScoringEngine {
         public let spine_lag_ms: Double
         public let worst_beat: BeatJudgment
         public let worst_joints: [JointErrorSummary]
+        public let smoothing_applied: Bool
+        public let hit_timing: HitTimingResult
+        public let joint_feedback: JointFeedbackResult
+        public let hand_styling: HandStylingResult
+        /// Single top issue (same wording as `top_deterministic_issue` in `groove_eval/scoring.py`).
+        public let top_issue: String
     }
 
     public struct ClapSyncResult: Sendable, Codable, Equatable {
@@ -317,7 +345,7 @@ public enum GrooveScoringEngine {
 
     // MARK: - Core Math Functions
 
-    private static func roundTo(_ val: Double, places: Int) -> Double {
+    static func roundTo(_ val: Double, places: Int) -> Double {
         let p = pow(10.0, Double(places))
         return (val * p).rounded() / p
     }
@@ -360,20 +388,7 @@ public enum GrooveScoringEngine {
         }
 
         if mirror {
-            let swapPairs = [
-                ("leftHip", "rightHip"),
-                ("leftKnee", "rightKnee"),
-                ("leftAnkle", "rightAnkle"),
-                ("leftShoulder", "rightShoulder"),
-                ("leftHeel", "rightHeel"),
-                ("leftFootIndex", "rightFootIndex")
-            ]
-            for (lName, rName) in swapPairs {
-                if let lVal = worldJoints[lName], let rVal = worldJoints[rName] {
-                    worldJoints[lName] = rVal
-                    worldJoints[rName] = lVal
-                }
-            }
+            swapMirrored(&worldJoints)
         }
 
         let z0 = Vec3(0, 0, 0)
@@ -589,10 +604,13 @@ public enum GrooveScoringEngine {
         )
     }
 
+    /// Full deterministic scoring of one attempt. `goldenClips` are extra clean takes of the same move that widen the
+    /// per-joint tolerances (the reference alone is used by default).
     public static func scoreAttempt(
         attempt: PoseClip,
         reference: PoseClip,
-        config: GrooveConfig
+        config: GrooveConfig,
+        goldenClips: [PoseClip] = []
     ) -> AttemptScoreResult {
         let thresholds = config.scoring_thresholds
         let minConf = thresholds.coverage.min_joint_confidence
@@ -611,8 +629,15 @@ public enum GrooveScoringEngine {
         let refGravity = Vec3(array: reference.gravity_vector ?? [0.0, -1.0, 0.0])
         let mirror = attempt.mirrored ?? false
 
-        let userFeatures = attempt.frames.map { extractFrameFeatures(frame: $0, gravityVector: userGravity, mirror: mirror) }
-        let refFeatures = reference.frames.map { extractFrameFeatures(frame: $0, gravityVector: refGravity, mirror: false) }
+        let smoothingCfg = thresholds.smoothing ?? SmoothingConfig()
+        let hitsCfg = thresholds.hits ?? HitTimingConfig()
+        let jointCfg = thresholds.joint_tolerance ?? JointToleranceThresholds()
+        let handsCfg = thresholds.hands ?? HandStylingThresholds()
+        let userFrames = smoothingCfg.enabled ? smoothFrames(attempt.frames, config: smoothingCfg) : attempt.frames
+        let refFrames = smoothingCfg.enabled ? smoothFrames(reference.frames, config: smoothingCfg) : reference.frames
+
+        let userFeatures = userFrames.map { extractFrameFeatures(frame: $0, gravityVector: userGravity, mirror: mirror) }
+        let refFeatures = refFrames.map { extractFrameFeatures(frame: $0, gravityVector: refGravity, mirror: false) }
 
         let beatTimes = reference.beat_times
         let bpm = reference.bpm
@@ -756,11 +781,59 @@ public enum GrooveScoringEngine {
 
         let grooveScore = roundTo(0.45 * flexSubscore + 0.30 * lagSubscore + 0.25 * smoothSubscore, places: 2)
 
+        // 4. Hit timing, joint verdicts, hand styling
+        let hitTiming = scoreHitTiming(
+            userFrames: userFrames,
+            refFrames: refFrames,
+            beatTimes: beatTimes,
+            audioLatencyMs: audioLatencyMs,
+            config: hitsCfg
+        )
+        let tolerances = computeJointTolerances(
+            clips: [reference] + goldenClips,
+            beatTimes: beatTimes,
+            config: jointCfg,
+            smoothing: smoothingCfg
+        )
+        let jointFeedback = scoreJointFeedback(
+            userFrames: userFrames,
+            refFrames: refFrames,
+            beatTimes: beatTimes,
+            perBeat: perBeat,
+            audioLatencyMs: audioLatencyMs,
+            userGravity: userGravity,
+            refGravity: refGravity,
+            mirror: mirror,
+            tolerances: tolerances,
+            config: jointCfg
+        )
+        let handStyling = scoreHandStyling(
+            userFrames: userFrames,
+            refFrames: refFrames,
+            beatTimes: beatTimes,
+            perBeat: perBeat,
+            audioLatencyMs: audioLatencyMs,
+            mirror: mirror,
+            config: handsCfg
+        )
+
         let coverageOk = coverageRatio >= minValidRatio
         let timingOk = goodOrBetterRatio >= thresholds.gate.min_good_or_better_beat_ratio
         let shapeOk = shapeScore >= thresholds.shape.pass_min_score
         let grooveOk = grooveScore >= thresholds.groove.pass_min_score
-        let passed = coverageOk && timingOk && shapeOk && grooveOk
+        // Optional gates: a skipped / not-applicable component never fails an attempt.
+        let hitsOk = !(hitsCfg.gate && hitTiming.status == "available" && (hitTiming.hit_score ?? 0.0) < hitsCfg.pass_min_score)
+        let handsOk = !(handsCfg.gate && handStyling.status == "available" && (handStyling.hand_score ?? 0.0) < handsCfg.pass_min_score)
+        let passed = coverageOk && timingOk && shapeOk && grooveOk && hitsOk && handsOk
+
+        let topIssue = describeTopIssue(
+            coverageOk: coverageOk, timingOk: timingOk, shapeOk: shapeOk, grooveOk: grooveOk,
+            hitsOk: hitsOk, handsOk: handsOk,
+            footScoringStatus: footScoringStatus, footCoverageRatio: footCoverageRatio, coverageRatio: coverageRatio,
+            worstBeat: worstBeat, worstJoint: worstJoints.first,
+            goodOrBetterRatio: goodOrBetterRatio, kneeFlexRatio: kneeFlexRatio, spineLagMs: spineLagMs,
+            hitTiming: hitTiming, handStyling: handStyling
+        )
 
         return AttemptScoreResult(
             clip_id: attempt.clip_id,
@@ -774,7 +847,12 @@ public enum GrooveScoringEngine {
             knee_flex_ratio: roundTo(kneeFlexRatio, places: 3),
             spine_lag_ms: spineLagMs,
             worst_beat: worstBeat,
-            worst_joints: Array(worstJoints.prefix(3))
+            worst_joints: Array(worstJoints.prefix(3)),
+            smoothing_applied: smoothingCfg.enabled,
+            hit_timing: hitTiming,
+            joint_feedback: jointFeedback,
+            hand_styling: handStyling,
+            top_issue: topIssue
         )
     }
 
