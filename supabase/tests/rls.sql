@@ -3,7 +3,7 @@
 -- Checks:
 --   1. anon reads nothing
 --   2. a learner reads published rows only
---   3. a learner cannot write lessons
+--   3. a learner cannot write lessons or escalate profile role
 --   4. a learner sees only their own attempts, cannot update or delete attempts
 --   5. an author can write
 --   6. storage select policy: learner reads published prefixes, author reads all
@@ -11,16 +11,19 @@
 begin;
 create extension if not exists pgtap;
 
-select plan(28);
+select plan(34);
 
 -- -----------------------------------------------------------------------------
 -- Setup helper for switching roles and JWT claims
 -- -----------------------------------------------------------------------------
 create schema if not exists tests;
+grant usage on schema tests to public, anon, authenticated;
+grant all on schema tests to public, anon, authenticated;
 
 create or replace function tests.authenticate_as(user_id uuid, user_role text default 'authenticated')
 returns void
 language plpgsql
+set search_path = public, tests
 as $$
 begin
   if user_id is null then
@@ -36,6 +39,8 @@ begin
   end if;
 end;
 $$;
+
+grant execute on function tests.authenticate_as(uuid, text) to public, anon, authenticated;
 
 -- -----------------------------------------------------------------------------
 -- Seed Test Data (as superuser / postgres)
@@ -97,19 +102,21 @@ on conflict (id) do nothing;
 -- -----------------------------------------------------------------------------
 -- 1. Anon reads nothing
 -- -----------------------------------------------------------------------------
+reset role;
 select tests.authenticate_as(null);
 
-select is_empty('select * from public.courses', 'anon cannot read courses');
-select is_empty('select * from public.lessons', 'anon cannot read lessons');
-select is_empty('select * from public.lesson_versions', 'anon cannot read lesson_versions');
-select is_empty('select * from public.attempts', 'anon cannot read attempts');
-select is_empty('select * from public.profiles', 'anon cannot read profiles');
-select is_empty('select * from public.catalog', 'anon cannot read catalog');
+select throws_ok('select * from public.courses', '42501', NULL, 'anon cannot read courses');
+select throws_ok('select * from public.lessons', '42501', NULL, 'anon cannot read lessons');
+select throws_ok('select * from public.lesson_versions', '42501', NULL, 'anon cannot read lesson_versions');
+select throws_ok('select * from public.attempts', '42501', NULL, 'anon cannot read attempts');
+select throws_ok('select * from public.profiles', '42501', NULL, 'anon cannot read profiles');
+select throws_ok('select * from public.catalog', '42501', NULL, 'anon cannot read catalog');
 select is_empty('select * from storage.objects where bucket_id = ''lesson-packages''', 'anon cannot read storage objects');
 
 -- -----------------------------------------------------------------------------
 -- 2. Learner reads published rows only
 -- -----------------------------------------------------------------------------
+reset role;
 select tests.authenticate_as('11111111-1111-1111-1111-111111111111'::uuid);
 
 select results_eq(
@@ -143,8 +150,11 @@ select results_eq(
 );
 
 -- -----------------------------------------------------------------------------
--- 3. Learner cannot write lessons
+-- 3. Learner cannot write lessons or escalate profile role
 -- -----------------------------------------------------------------------------
+reset role;
+select tests.authenticate_as('11111111-1111-1111-1111-111111111111'::uuid);
+
 select throws_ok(
   'insert into public.courses (slug, title, status) values (''bad-course'', ''Bad'', ''published'')',
   '42501',
@@ -152,17 +162,33 @@ select throws_ok(
   'learner cannot insert course'
 );
 
-select results_eq(
-  'update public.courses set title = ''hacked'' where slug = ''bollywood-basics'' returning slug',
-  '{}'::text[],
-  'learner cannot update course'
+select lives_ok(
+  'update public.courses set title = ''hacked'' where slug = ''bollywood-basics''',
+  'learner update course executes without error'
 );
 
+reset role;
 select results_eq(
-  'delete from public.courses where slug = ''bollywood-basics'' returning slug',
-  '{}'::text[],
-  'learner cannot delete course'
+  'select title from public.courses where slug = ''bollywood-basics''',
+  ARRAY['Bollywood Basics']::text[],
+  'learner update course affected 0 rows (title unchanged)'
 );
+
+select tests.authenticate_as('11111111-1111-1111-1111-111111111111'::uuid);
+
+select lives_ok(
+  'delete from public.courses where slug = ''bollywood-basics''',
+  'learner delete course executes without error'
+);
+
+reset role;
+select results_eq(
+  'select count(*)::integer from public.courses where slug = ''bollywood-basics''',
+  ARRAY[1]::integer[],
+  'learner delete course affected 0 rows (course not deleted)'
+);
+
+select tests.authenticate_as('11111111-1111-1111-1111-111111111111'::uuid);
 
 select throws_ok(
   'insert into public.lessons (course_id, slug, title, position, status) values (''a0000000-0000-0000-0000-000000000001'', ''bad-lesson'', ''Bad'', 10, ''published'')',
@@ -178,9 +204,26 @@ select throws_ok(
   'learner cannot insert lesson_version'
 );
 
+select throws_ok(
+  'update public.profiles set role = ''author'' where id = ''11111111-1111-1111-1111-111111111111''',
+  'P0001',
+  'Role changes are forbidden',
+  'learner cannot elevate profile role to author'
+);
+
+select throws_ok(
+  'insert into public.profiles (id, role) values (''44444444-4444-4444-4444-444444444444'', ''author'')',
+  'P0001',
+  'Cannot self-assign non-learner role',
+  'learner cannot insert profile with author role'
+);
+
 -- -----------------------------------------------------------------------------
 -- 4. Learner sees only their own attempts, cannot update or delete attempts
 -- -----------------------------------------------------------------------------
+reset role;
+select tests.authenticate_as('11111111-1111-1111-1111-111111111111'::uuid);
+
 select results_eq(
   'select user_id from public.attempts',
   ARRAY['11111111-1111-1111-1111-111111111111']::uuid[],
@@ -199,21 +242,36 @@ select throws_ok(
   'learner cannot insert attempt for another user'
 );
 
-select results_eq(
-  'update public.attempts set passed = false where user_id = ''11111111-1111-1111-1111-111111111111'' returning id',
-  '{}'::uuid[],
-  'learner cannot update attempt'
+select lives_ok(
+  'update public.attempts set passed = false where user_id = ''11111111-1111-1111-1111-111111111111''',
+  'learner update attempt executes without error'
 );
 
+reset role;
 select results_eq(
-  'delete from public.attempts where user_id = ''11111111-1111-1111-1111-111111111111'' returning id',
-  '{}'::uuid[],
-  'learner cannot delete attempt'
+  'select passed from public.attempts where id = ''d0000000-0000-0000-0000-000000000001''',
+  ARRAY[true]::boolean[],
+  'learner update attempt affected 0 rows (passed flag unchanged)'
+);
+
+select tests.authenticate_as('11111111-1111-1111-1111-111111111111'::uuid);
+
+select lives_ok(
+  'delete from public.attempts where user_id = ''11111111-1111-1111-1111-111111111111''',
+  'learner delete attempt executes without error'
+);
+
+reset role;
+select results_eq(
+  'select count(*)::integer from public.attempts where id = ''d0000000-0000-0000-0000-000000000001''',
+  ARRAY[1]::integer[],
+  'learner delete attempt affected 0 rows (attempt not deleted)'
 );
 
 -- -----------------------------------------------------------------------------
 -- 5. Author can write & read drafts
 -- -----------------------------------------------------------------------------
+reset role;
 select tests.authenticate_as('33333333-3333-3333-3333-333333333333'::uuid);
 
 select results_eq(

@@ -30,7 +30,8 @@ as $$
   );
 $$;
 
--- Trigger to create profile when auth.users is created
+-- Trigger to create profile when auth.users is created.
+-- Always assign 'learner' role regardless of client-supplied raw_user_meta_data.
 create or replace function public.handle_new_user()
 returns trigger
 language plpgsql
@@ -41,7 +42,7 @@ begin
   insert into public.profiles (id, role)
   values (
     new.id,
-    coalesce(new.raw_user_meta_data->>'role', 'learner')
+    'learner'
   )
   on conflict (id) do nothing;
   return new;
@@ -52,6 +53,44 @@ drop trigger if exists on_auth_user_created on auth.users;
 create trigger on_auth_user_created
   after insert on auth.users
   for each row execute function public.handle_new_user();
+
+-- Trigger to prevent non-service-roles from escalating privileges on profiles
+create or replace function public.protect_profile_role()
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  jwt_role text;
+begin
+  begin
+    jwt_role := coalesce(
+      current_setting('request.jwt.claim.role', true),
+      (nullif(current_setting('request.jwt.claims', true), '')::jsonb ->> 'role')
+    );
+  exception when others then
+    jwt_role := null;
+  end;
+
+  -- Block any non-service_role (e.g. authenticated, anon) from setting non-learner role or modifying role
+  if current_user in ('authenticated', 'anon') or (jwt_role is not null and jwt_role in ('authenticated', 'anon')) then
+    if tg_op = 'INSERT' and new.role <> 'learner' then
+      raise exception 'Cannot self-assign non-learner role';
+    end if;
+    if tg_op = 'UPDATE' and new.role is distinct from old.role then
+      raise exception 'Role changes are forbidden';
+    end if;
+  end if;
+
+  return new;
+end;
+$$;
+
+drop trigger if exists protect_profile_role_trigger on public.profiles;
+create trigger protect_profile_role_trigger
+  before insert or update on public.profiles
+  for each row execute function public.protect_profile_role();
 
 -- -----------------------------------------------------------------------------
 -- 2. Core Tables
@@ -163,7 +202,7 @@ create policy "Authenticated users can read own profile"
 create policy "Authenticated users can insert own profile"
   on public.profiles for insert
   to authenticated
-  with check (id = auth.uid());
+  with check (id = auth.uid() and role = 'learner');
 
 create policy "Authenticated users can update own profile"
   on public.profiles for update
@@ -197,7 +236,17 @@ create policy "Authors can delete courses"
 create policy "Authenticated users can select published lessons or authors all"
   on public.lessons for select
   to authenticated
-  using (status = 'published' or is_author());
+  using (
+    (
+      status = 'published'
+      and exists (
+        select 1 from public.courses c
+        where c.id = lessons.course_id
+          and c.status = 'published'
+      )
+    )
+    or is_author()
+  );
 
 create policy "Authors can insert lessons"
   on public.lessons for insert
@@ -216,10 +265,22 @@ create policy "Authors can delete lessons"
   using (is_author());
 
 -- Lesson versions policies
-create policy "Authenticated users can select published lesson_versions or authors all"
+create policy "Authenticated users select published lesson_versions or authors all"
   on public.lesson_versions for select
   to authenticated
-  using (status = 'published' or is_author());
+  using (
+    (
+      status = 'published'
+      and exists (
+        select 1 from public.lessons l
+        join public.courses c on c.id = l.course_id
+        where l.id = lesson_versions.lesson_id
+          and l.status = 'published'
+          and c.status = 'published'
+      )
+    )
+    or is_author()
+  );
 
 create policy "Authors can insert lesson_versions"
   on public.lesson_versions for insert
@@ -277,8 +338,8 @@ create policy "Authenticated users can select published lesson package objects"
           and l.status = 'published'
           and lv.status = 'published'
           and (
-            storage.objects.name like (lv.storage_prefix || '%')
-            or storage.objects.name like (trim(trailing '/' from lv.storage_prefix) || '/%')
+            starts_with(storage.objects.name, lv.storage_prefix)
+            or starts_with(storage.objects.name, rtrim(lv.storage_prefix, '/') || '/')
           )
       )
     )
