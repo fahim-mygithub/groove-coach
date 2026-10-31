@@ -3,13 +3,25 @@ import CoreMotion
 import GrooveCore
 import PhotosUI
 import SwiftUI
-import Vision
+import UIKit
 
 @main
 struct GrooveCoachApp: App {
+    @StateObject private var library = GrooveLibrary()
+    @StateObject private var lessonStore = LessonStore.shared
+
     var body: some Scene {
         WindowGroup {
-            CalibrationOnboardingView()
+            TabView {
+                CourseListView()
+                    .tabItem { Label("Courses", systemImage: "play.rectangle.on.rectangle") }
+                PracticeView()
+                    .tabItem { Label("Practice", systemImage: "figure.dance") }
+                CalibrationOnboardingView()
+                    .tabItem { Label("Calibrate", systemImage: "slider.horizontal.3") }
+            }
+            .environmentObject(library)
+            .environmentObject(lessonStore)
         }
     }
 }
@@ -48,7 +60,7 @@ enum CalibrationClipRole: String, CaseIterable, Identifiable {
 }
 
 /// In-App Personal Calibration & 20-Clip Pose Ingest Screen (M1a + M0b).
-/// Ingests ~20 short 20-second clips directly on the iPhone, runs unified Vision 3D + Core ML foot
+/// Ingests ~20 short 20-second clips directly on the iPhone, runs MediaPipe
 /// pose extraction, calibrates the user's personal baseline (`LearnerBaseline`), verifies 100%
 /// pass/fail separation, and saves/exports the calibration bundle.
 struct CalibrationOnboardingView: View {
@@ -58,12 +70,14 @@ struct CalibrationOnboardingView: View {
     @State private var clipRole: CalibrationClipRole = .cleanPass
     @State private var bpm: Double = 110.0
 
-    @State private var references: [String: GrooveScoringEngine.PoseClip] = [:]
-    @State private var calibrationClips: [GrooveScoringEngine.PoseClip] = []
+    @EnvironmentObject private var library: GrooveLibrary
+    private var references: [String: GrooveScoringEngine.PoseClip] { library.references }
+    private var calibrationClips: [GrooveScoringEngine.PoseClip] { library.calibrationClips }
     @State private var calibrationReport: GrooveScoringEngine.CalibrationReport?
     @State private var exportedBundleURL: URL?
 
     @State private var statusText: String = "Step 1: Import reference clips (`down_bounce`, `house_jack`), then ingest your ~20 calibration clips."
+    private let poseTrackingAvailable = MediaPipePoseProvider.isAvailable
     @State private var measuredFps: Double = 0.0
 
     private let motionManager = CMMotionManager()
@@ -102,8 +116,14 @@ struct CalibrationOnboardingView: View {
                     Text(statusText)
                         .font(.footnote)
                         .foregroundStyle(.secondary)
+                    Label(
+                        poseTrackingAvailable ? "MediaPipe Pose Landmarker: active" : "MediaPipe: unavailable in this build",
+                        systemImage: poseTrackingAvailable ? "figure.dance" : "exclamationmark.triangle"
+                    )
+                    .font(.caption)
+                    .foregroundStyle(poseTrackingAvailable ? .green : .orange)
                     if measuredFps > 0 {
-                        Text(String(format: "Last Vision 3D + Foot Speed: %.1f fps", measuredFps))
+                        Text(String(format: "Last MediaPipe Speed: %.1f fps", measuredFps))
                             .font(.caption.monospacedDigit().bold())
                     }
                 }
@@ -186,19 +206,6 @@ struct CalibrationOnboardingView: View {
         return [g.x, g.y, g.z]
     }
 
-    private func defaultConfig() -> GrooveScoringEngine.GrooveConfig {
-        GrooveScoringEngine.GrooveConfig(
-            version: "1.0.0",
-            scoring_thresholds: .init(
-                timing: .init(perfect_max_ms: 60.0, good_max_ms: 120.0, search_window_beats: 0.45),
-                shape: .init(max_angle_error_deg: 45.0, max_single_joint_error_deg: 24.0, foot_pitch_weight: 0.30, pass_min_score: 70.0),
-                groove: .init(min_knee_flex_ratio: 0.65, ideal_spine_lag_ms_min: 30.0, ideal_spine_lag_ms_max: 110.0, max_jerk_ratio: 2.5, pass_min_score: 65.0),
-                coverage: .init(min_joint_confidence: 0.50, min_valid_frame_ratio: 0.80),
-                gate: .init(min_good_or_better_beat_ratio: 0.80, speed_ladder_pct: [50, 75, 90, 100])
-            )
-        )
-    }
-
     @MainActor
     private func ingestPickedVideo(_ item: PhotosPickerItem) async {
         statusText = "Loading 20s video clip..."
@@ -210,7 +217,7 @@ struct CalibrationOnboardingView: View {
             let tempVideoURL = FileManager.default.temporaryDirectory.appendingPathComponent("ingest_clip.mov")
             try movieData.write(to: tempVideoURL, options: .atomic)
 
-            statusText = "Extracting Vision 3D + Core ML foot poses..."
+            statusText = "Extracting MediaPipe 3D pose + hands..."
             let startWall = CFAbsoluteTimeGetCurrent()
             let frames = try await VideoPoseExtractor.extractFrames(from: tempVideoURL)
             let elapsed = max(0.001, CFAbsoluteTimeGetCurrent() - startWall)
@@ -235,10 +242,10 @@ struct CalibrationOnboardingView: View {
             )
 
             if clipRole == .reference {
-                references[moveTag] = clip
+                library.references[moveTag] = clip
                 statusText = "Saved reference clip for `\(moveTag)` (\(frames.count) frames @ \(String(format: "%.1f", measuredFps)) fps)."
             } else {
-                calibrationClips.append(clip)
+                library.calibrationClips.append(clip)
                 statusText = "Ingested `\(clipId)` (\(calibrationClips.count)/20 calibration clips)."
                 clipId = String(format: "clip_%02d_%@", calibrationClips.count + 1, moveTag)
             }
@@ -249,7 +256,7 @@ struct CalibrationOnboardingView: View {
 
     @MainActor
     private func runOnDeviceCalibration() {
-        let cfg = defaultConfig()
+        let cfg = library.config
         let report = GrooveScoringEngine.calibrateUserBaseline(
             clips: calibrationClips,
             references: references,
@@ -279,103 +286,18 @@ struct CalibrationOnboardingView: View {
     }
 }
 
-enum VideoPoseExtractor {
-    static let visionJointMap: [(String, VNHumanBodyPose3DObservation.JointName)] = [
-        ("root", .root),
-        ("spine", .spine),
-        ("centerShoulder", .centerShoulder),
-        ("leftHip", .leftHip),
-        ("leftKnee", .leftKnee),
-        ("leftAnkle", .leftAnkle),
-        ("rightHip", .rightHip),
-        ("rightKnee", .rightKnee),
-        ("rightAnkle", .rightAnkle),
-        ("leftShoulder", .leftShoulder),
-        ("rightShoulder", .rightShoulder)
-    ]
-
-    static func extractFrames(from videoURL: URL) async throws -> [GrooveScoringEngine.RawPoseFrame] {
-        let asset = AVURLAsset(url: videoURL)
-        guard let track = try await asset.loadTracks(withMediaType: .video).first else {
-            return []
-        }
-
-        let reader = try AVAssetReader(asset: asset)
-        let outputSettings: [String: Any] = [
-            kCVPixelBufferPixelFormatTypeKey as String: Int(kCVPixelFormatType_32BGRA)
-        ]
-        let trackOutput = AVAssetReaderTrackOutput(track: track, outputSettings: outputSettings)
-        reader.add(trackOutput)
-        reader.startReading()
-
-        var extracted: [GrooveScoringEngine.RawPoseFrame] = []
-        while let sampleBuffer = trackOutput.copyNextSampleBuffer() {
-            let timestamp = CMSampleBufferGetPresentationTimeStamp(sampleBuffer).seconds
-            let request3D = VNDetectHumanBodyPose3DRequest()
-            let request2D = VNDetectHumanBodyPoseRequest()
-            let handler = VNImageRequestHandler(cmSampleBuffer: sampleBuffer, orientation: .up)
-            try handler.perform([request3D, request2D])
-
-            guard let obs3D = request3D.results?.first else { continue }
-            var jointsDict: [String: [Double]] = [:]
-            var confDict: [String: Double] = [:]
-
-            for (name, jointKey) in visionJointMap {
-                if let point = try? obs3D.recognizedPoint(jointKey) {
-                    let pos = point.localPosition.columns.3
-                    jointsDict[name] = [Double(pos.x), Double(pos.y), Double(pos.z)]
-                    confDict[name] = 0.95
-                }
-            }
-
-            // Foot keypoints: NEVER fake heel/toe positions from ankle offsets.
-            // Only populate if a real FootKeypointProvider (e.g. MediaPipeTasksVision PoseLandmarker) returns them;
-            // otherwise leave foot joints absent from `jointsDict` with explicit 0.0 confidence so scoring reports "unavailable".
-            if let realFeet = FootLandmarkerBridge.extractFootKeypoints(from: sampleBuffer, timestampSeconds: timestamp) {
-                for (footName, coords) in realFeet.joints {
-                    jointsDict[footName] = coords
-                }
-                for (footName, conf) in realFeet.confidences {
-                    confDict[footName] = conf
-                }
-            } else {
-                confDict["leftHeel"] = 0.0
-                confDict["leftFootIndex"] = 0.0
-                confDict["rightHeel"] = 0.0
-                confDict["rightFootIndex"] = 0.0
-            }
-
-            extracted.append(
-                GrooveScoringEngine.RawPoseFrame(
-                    t: timestamp,
-                    joints: jointsDict,
-                    confidences: confDict
-                )
-            )
-        }
-        return extracted
-    }
-}
-
-/// Bridge for real foot keypoint extraction (`leftHeel`, `leftFootIndex`, `rightHeel`, `rightFootIndex`).
-/// Uses official `MediaPipeTasksVision` (`PoseLandmarker` indices 29, 30, 31, 32) when linked;
-/// returns `nil` (zero confidence, never fake ankle offsets) when running body-only Build #1.
-enum FootLandmarkerBridge {
-    struct FootResult {
-        let joints: [String: [Double]]
-        let confidences: [String: Double]
+public enum VideoPoseExtractor {
+    /// MediaPipe Pose + Hand landmark extraction for recorded videos (spec §3.1, §3.3).
+    public static func extractFrames(
+        from videoURL: URL,
+        rebaseToFirstSample: Bool = false
+    ) async throws -> [GrooveScoringEngine.RawPoseFrame] {
+        try await MediaPipePoseProvider.shared.extract(videoURL: videoURL, rebaseToFirstSample: rebaseToFirstSample)
     }
 
-    static func extractFootKeypoints(
-        from sampleBuffer: CMSampleBuffer,
-        timestampSeconds: Double
-    ) -> FootResult? {
-        #if canImport(MediaPipeTasksVision)
-        // MediaPipe PoseLandmarker indices: 29 = left_heel, 30 = right_heel, 31 = left_foot_index, 32 = right_foot_index
-        return nil
-        #else
-        return nil
-        #endif
+    /// Display orientation helper forwarding to MediaPipePoseProvider.
+    public static func orientation(for transform: CGAffineTransform) -> UIImage.Orientation {
+        MediaPipePoseProvider.orientation(for: transform)
     }
 }
 
@@ -396,4 +318,3 @@ public enum HostTimeClock {
         return AVAudioTime.seconds(forHostTime: audioTime.hostTime)
     }
 }
-
