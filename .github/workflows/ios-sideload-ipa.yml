@@ -2,6 +2,18 @@ name: iOS Unsigned IPA (Sideloadly)
 
 on:
   workflow_dispatch:
+    inputs:
+      require_m2a:
+        # Default false until M2A lands. Flip to true (Run workflow with require_m2a checked, or change this
+        # default once M2A is merged) and the build also requires hand_landmarker.task in the app bundle with
+        # its pinned sha256, and fails if any Vision body/hand pose request is still linked. The pose model
+        # check is always on.
+        description: "M2A integrated: require hand model in bundle and no Vision body/hand pose requests"
+        type: boolean
+        default: false
+
+env:
+  REQUIRE_M2A: ${{ inputs.require_m2a && 'true' || 'false' }}
 
 jobs:
   build-ipa:
@@ -18,6 +30,21 @@ jobs:
 
       - name: Fetch pinned MediaPipe pose model
         run: bash ios/GrooveApp/Resources/fetch_pose_model.sh
+
+      - name: Fetch pinned MediaPipe hand model
+        run: |
+          # Same pin as authoring/extract_pose.py (HAND_MODEL_SHA256); the download is verified before use.
+          HAND_URL="https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task"
+          HAND_SHA256="fbc2a30080c3c557093b5ddfc334698132eb341044ccee322ccf8bcf3607cde1"
+          DEST="ios/GrooveApp/Resources/hand_landmarker.task"
+          curl -fsSL --retry 3 -o "$DEST" "$HAND_URL"
+          echo "$HAND_SHA256  $DEST" | shasum -a 256 -c -
+
+      - name: Verify pinned model hashes before building
+        run: |
+          # Both .task models must match their pins; the pose pin is also checked by fetch_pose_model.sh.
+          echo "5134a3aad27a58b93da0088d431f366da362b44e3ccfbe3462b3827a839011b1  ios/GrooveApp/Resources/pose_landmarker_full.task" | shasum -a 256 -c -
+          echo "fbc2a30080c3c557093b5ddfc334698132eb341044ccee322ccf8bcf3607cde1  ios/GrooveApp/Resources/hand_landmarker.task" | shasum -a 256 -c -
 
       - name: Generate Xcode Project
         working-directory: ios/GrooveApp
@@ -46,14 +73,31 @@ jobs:
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY=""
 
+      - name: Verify both pinned models are in the app bundle
+        run: |
+          APP="$RUNNER_TEMP/dd/Build/Products/Release-iphoneos/GrooveCoach.app"
+          # The pose model is always required. project.yml lists it as a resource.
+          test -f "$APP/pose_landmarker_full.task" || { echo "pose model missing from app bundle"; exit 1; }
+          # The bundled copy must be the pinned bytes, not just a file with the right name.
+          echo "5134a3aad27a58b93da0088d431f366da362b44e3ccfbe3462b3827a839011b1  $APP/pose_landmarker_full.task" | shasum -a 256 -c - || { echo "bundled pose model sha256 mismatch"; exit 1; }
+          if [ "$REQUIRE_M2A" = "true" ]; then
+            # M2A mode: project.yml must list Resources/hand_landmarker.task as a resource.
+            test -f "$APP/hand_landmarker.task" || { echo "hand model missing from app bundle (project.yml must list Resources/hand_landmarker.task)"; exit 1; }
+            echo "fbc2a30080c3c557093b5ddfc334698132eb341044ccee322ccf8bcf3607cde1  $APP/hand_landmarker.task" | shasum -a 256 -c - || { echo "bundled hand model sha256 mismatch"; exit 1; }
+          else
+            echo "hand model bundle check skipped (REQUIRE_M2A=false)"
+          fi
+
       - name: Verify foot tracking is in the app bundle
         run: |
           APP="$RUNNER_TEMP/dd/Build/Products/Release-iphoneos/GrooveCoach.app"
-          test -f "$APP/pose_landmarker_full.task" || { echo "pose model missing from app bundle"; exit 1; }
           # MediaPipeTasksVision/Common are static frameworks: verify they are linked into the app binary.
-          strings "$APP/GrooveCoach" > "$RUNNER_TEMP/app-strings.txt"
+          # `strings -a` and `nm` (defined symbols) see the static MediaPipe code; plain `strings` can miss it.
+          nm "$APP/GrooveCoach" > "$RUNNER_TEMP/app-nm.txt" || true
+          strings -a "$APP/GrooveCoach" > "$RUNNER_TEMP/app-strings.txt"
           grep -q "MPPPoseLandmarker" "$RUNNER_TEMP/app-strings.txt" || { echo "MediaPipe PoseLandmarker not linked"; exit 1; }
           grep -q "MediaPipeFootKeypointProvider" "$RUNNER_TEMP/app-strings.txt" || { echo "FootKeypointProvider compiled without MediaPipe"; exit 1; }
+          grep -q "MPPPoseLandmarker" "$RUNNER_TEMP/app-nm.txt" || { echo "MPPPoseLandmarker symbol missing from nm output"; exit 1; }
           otool -L "$APP/GrooveCoach"
           if [ -d "$APP/Frameworks" ]; then ls -la "$APP/Frameworks"; fi
           ls -la "$APP"
@@ -64,13 +108,21 @@ jobs:
           # Imported system classes live in the dyld imports (__LINKEDIT), which plain `strings` skips: use nm -u.
           nm -u "$APP/GrooveCoach" > "$RUNNER_TEMP/app-imports.txt"
           strings -a "$APP/GrooveCoach" > "$RUNNER_TEMP/app-strings-all.txt"
-          # Apple Vision hand pose path (no extra dependency): the request class and our 21-point mapper.
-          grep -q 'OBJC_CLASS_$_VNDetectHumanHandPoseRequest' "$RUNNER_TEMP/app-imports.txt" || { echo "VNDetectHumanHandPoseRequest not linked: hand pose path not compiled in"; exit 1; }
-          grep -q 'OBJC_CLASS_$_VNDetectHumanBodyPose3DRequest' "$RUNNER_TEMP/app-imports.txt" || { echo "Vision 3D body pose not linked"; exit 1; }
+          if [ "$REQUIRE_M2A" = "true" ]; then
+            # M2A mode: no Vision body/hand pose request may remain in the imports.
+            if grep -E "VNDetectHuman(Body|Hand)Pose" "$RUNNER_TEMP/app-imports.txt"; then
+              echo "Vision body/hand pose still linked but REQUIRE_M2A=true"; exit 1
+            fi
+            echo "Vision body/hand pose requests absent (REQUIRE_M2A=true)"
+          else
+            # Apple Vision hand pose path (no extra dependency): the request class and our 21-point mapper.
+            grep -q 'OBJC_CLASS_$_VNDetectHumanHandPoseRequest' "$RUNNER_TEMP/app-imports.txt" || { echo "VNDetectHumanHandPoseRequest not linked: hand pose path not compiled in"; exit 1; }
+            grep -q 'OBJC_CLASS_$_VNDetectHumanBodyPose3DRequest' "$RUNNER_TEMP/app-imports.txt" || { echo "Vision 3D body pose not linked"; exit 1; }
+            grep -E "VNDetectHuman(Hand|Body)Pose" "$RUNNER_TEMP/app-imports.txt"
+          fi
           grep -q "HandPoseExtractor" "$RUNNER_TEMP/app-strings-all.txt" || { echo "HandPoseExtractor missing from app binary"; exit 1; }
           grep -q "PracticeCamera" "$RUNNER_TEMP/app-strings-all.txt" || { echo "Practice capture (gestures) missing from app binary"; exit 1; }
           grep -q "GestureRecognizer" "$RUNNER_TEMP/app-strings-all.txt" || { echo "GestureRecognizer missing from app binary"; exit 1; }
-          grep -E "VNDetectHuman(Hand|Body)Pose" "$RUNNER_TEMP/app-imports.txt"
           # Bundled scoring config must carry the wave-2 sections.
           test -f "$APP/groove_config.json" || { echo "groove_config.json missing from app bundle"; exit 1; }
           for key in smoothing hits joint_tolerance hands; do
