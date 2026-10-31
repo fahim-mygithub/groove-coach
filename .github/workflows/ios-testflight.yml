@@ -7,14 +7,6 @@ on:
         description: "TestFlight build number"
         required: false
         default: "1"
-      require_m2a:
-        # Default false until M2A lands; flip as described in ios-sideload-ipa.yml (same switch).
-        description: "M2A integrated: require hand model in archive and no Vision body/hand pose requests"
-        type: boolean
-        default: false
-
-env:
-  REQUIRE_M2A: ${{ inputs.require_m2a && 'true' || 'false' }}
 
 jobs:
   build-and-upload:
@@ -103,25 +95,16 @@ jobs:
           # Both pinned models must be bundled with the pinned bytes.
           test -f "$APP/pose_landmarker_full.task" || { echo "pose model missing from archive"; exit 1; }
           echo "5134a3aad27a58b93da0088d431f366da362b44e3ccfbe3462b3827a839011b1  $APP/pose_landmarker_full.task" | shasum -a 256 -c - || { echo "archived pose model sha256 mismatch"; exit 1; }
-          if [ "$REQUIRE_M2A" = "true" ]; then
-            test -f "$APP/hand_landmarker.task" || { echo "hand model missing from archive (project.yml must list Resources/hand_landmarker.task)"; exit 1; }
-            echo "fbc2a30080c3c557093b5ddfc334698132eb341044ccee322ccf8bcf3607cde1  $APP/hand_landmarker.task" | shasum -a 256 -c - || { echo "archived hand model sha256 mismatch"; exit 1; }
-          else
-            echo "hand model archive check skipped (REQUIRE_M2A=false)"
-          fi
+          test -f "$APP/hand_landmarker.task" || { echo "hand model missing from archive (project.yml must list Resources/hand_landmarker.task)"; exit 1; }
+          echo "fbc2a30080c3c557093b5ddfc334698132eb341044ccee322ccf8bcf3607cde1  $APP/hand_landmarker.task" | shasum -a 256 -c - || { echo "archived hand model sha256 mismatch"; exit 1; }
           # MediaPipe must be linked (not the canImport stub), and the Vision mode must match the flag.
           strings -a "$APP/GrooveCoach" > "$RUNNER_TEMP/app-strings.txt"
           nm -u "$APP/GrooveCoach" > "$RUNNER_TEMP/app-imports.txt"
           grep -q "MPPPoseLandmarker" "$RUNNER_TEMP/app-strings.txt" || { echo "MediaPipe PoseLandmarker not linked"; exit 1; }
-          grep -q "MediaPipeFootKeypointProvider" "$RUNNER_TEMP/app-strings.txt" || { echo "FootKeypointProvider compiled without MediaPipe"; exit 1; }
-          if [ "$REQUIRE_M2A" = "true" ]; then
-            if grep -E "VNDetectHuman(Body|Hand)Pose" "$RUNNER_TEMP/app-imports.txt"; then
-              echo "Vision body/hand pose still linked but REQUIRE_M2A=true"; exit 1
-            fi
-          else
-            grep -q 'OBJC_CLASS_$_VNDetectHumanHandPoseRequest' "$RUNNER_TEMP/app-imports.txt" || { echo "VNDetectHumanHandPoseRequest not linked"; exit 1; }
-            grep -q 'OBJC_CLASS_$_VNDetectHumanBodyPose3DRequest' "$RUNNER_TEMP/app-imports.txt" || { echo "Vision 3D body pose not linked"; exit 1; }
+          if grep -E "VNDetectHuman(Body|Hand)Pose" "$RUNNER_TEMP/app-imports.txt"; then
+            echo "Vision body/hand pose still linked"; exit 1
           fi
+          echo "Vision body/hand pose requests absent"
 
       - name: Upload IPA to TestFlight via App Store Connect API (.p8)
         uses: apple-actions/upload-testflight-build@v1
