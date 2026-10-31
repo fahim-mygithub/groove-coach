@@ -172,7 +172,7 @@ final class PracticeViewModel: ObservableObject {
 
             self.metronome.stop()
             self.phase = .analyzing
-            self.status = "Analyzing take (Vision 3D + feet + hands)…"
+            self.status = "Analyzing take (MediaPipe body + hands)…"
             guard let output = await self.camera.finishRecording() else {
                 self.phase = .idle
                 self.status = "Recording failed. Try again."
