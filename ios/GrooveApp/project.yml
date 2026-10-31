@@ -16,6 +16,10 @@ targets:
       - path: Resources/pose_landmarker_full.task
         optional: true
         buildPhase: resources
+      # MediaPipe Hand Landmarker model; fetched (sha256-pinned) by Resources/fetch_pose_model.sh, not committed.
+      - path: Resources/hand_landmarker.task
+        optional: true
+        buildPhase: resources
       # Scoring thresholds shared with groove_eval + the Swift parity gate (loaded by GrooveLibrary).
       - path: ../../config/groove_config.json
         buildPhase: resources
@@ -32,7 +36,7 @@ targets:
         CFBundleDisplayName: Groove Coach
         NSCameraUsageDescription: "Groove Coach uses the camera to track your full-body 3D pose, footwork and hand shapes, and to recognise hands-free gestures (swipe, clap, hands up) while you practice."
         NSMotionUsageDescription: "Groove Coach reads the phone's gravity tilt angle so a leaning phone on the floor does not distort joint angles."
-        NSPhotoLibraryUsageDescription: "Import reference dance videos or recorded golden clips to extract unified Vision 3D + foot pose JSON."
+        NSPhotoLibraryUsageDescription: "Import reference dance videos or recorded golden clips to extract MediaPipe pose JSON."
         UILaunchScreen: {}
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
