@@ -255,7 +255,7 @@ final class PracticeViewModel: ObservableObject {
     }
 
     /// Learner pose at the first beat, as a front-view stick figure (normalised, y down).
-    private static func displayPose(take: GrooveScoringEngine.PoseClip, at t: Double, mirrored: Bool) -> [String: CGPoint] {
+    public static func displayPose(take: GrooveScoringEngine.PoseClip, at t: Double, mirrored: Bool) -> [String: CGPoint] {
         var pose = GrooveScoringEngine.bodyNormalizedPose(
             frames: take.frames,
             at: t,
@@ -371,7 +371,7 @@ struct PracticeView: View {
 }
 
 /// Live skeleton (coloured by the last take's verdicts) and live hand-shape labels over the camera.
-private struct LiveOverlay: View {
+struct LiveOverlay: View {
     @ObservedObject var camera: PracticeCamera
     let severities: [String: String]
 

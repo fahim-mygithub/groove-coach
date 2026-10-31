@@ -94,6 +94,7 @@ struct TakeResultView: View {
     let result: GrooveScoringEngine.AttemptScoreResult
     /// Learner pose (normalised, y down) at the first beat, for the coloured stick figure.
     let pose: [String: CGPoint]
+    var onExport: (() -> Void)? = nil
 
     private var severities: [String: String] { JointSeverityMap.from(result.joint_feedback) }
 
@@ -140,6 +141,19 @@ struct TakeResultView: View {
                         }
                     }
                 }
+            }
+
+            if let onExport {
+                Button {
+                    onExport()
+                } label: {
+                    Label("Export Attempt Bundle", systemImage: "square.and.arrow.up")
+                        .font(.subheadline.bold())
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.regular)
+                .padding(.top, 4)
             }
         }
     }
