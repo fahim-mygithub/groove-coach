@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
 """Verify 1:1 numeric parity between Python (`groove_eval/scoring.py`) and Swift (`GrooveCore`).
 
-Two datasets are scored: the 20 golden clips (`fixtures/golden_clips.json`) and the feature clips
+Three datasets are scored: the 20 golden clips (`fixtures/golden_clips.json`), the feature clips
 (`fixtures/feature_clips.json`, arm hits + hand landmarks) so smoothing, hit timing, joint verdicts and hand
-styling are all covered. Python results are checked against `fixtures/expected_scores_snapshot.json`, and against
-the Swift `groove-score-cli` whenever a Swift toolchain is installed (always in linux-ci).
+styling are all covered, and the lesson clips (`fixtures/lesson_clips.json`: arm shape term, hits timing gate,
+clasp windows, rate stretch, retargeting, velocity / occlusion tolerances). A clip's `config_overrides` are
+deep-merged over the config before scoring, here and in groove-score-cli. Python results are checked against
+`fixtures/expected_scores_snapshot.json`, and against the Swift `groove-score-cli` whenever a Swift toolchain is
+installed (always in linux-ci).
 """
 
 from __future__ import annotations
@@ -19,9 +22,9 @@ from typing import Any, Dict, List, Optional
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from groove_eval.scoring import load_config, score_attempt  # noqa: E402
+from groove_eval.scoring import load_config, merge_config, score_attempt  # noqa: E402
 
-DATASETS = ("golden_clips.json", "feature_clips.json")
+DATASETS = ("golden_clips.json", "feature_clips.json", "lesson_clips.json")
 
 NUMERIC_KEYS = (
     "coverage_ratio",
@@ -32,6 +35,7 @@ NUMERIC_KEYS = (
     "hit_score",
     "hit_mean_offset_ms",
     "hand_score",
+    "arm_error_deg",
 )
 EXACT_KEYS = (
     "passed",
@@ -58,7 +62,7 @@ def _severities(verdicts: List[Dict[str, Any]], angle_verdicts: List[Dict[str, A
 
 def flatten_python(res: Dict[str, Any]) -> Dict[str, Any]:
     hits, hands, joints = res["hits"], res["hands"], res["joints"]
-    return {
+    out = {
         "clip_id": res["clip_id"],
         "passed": res["passed"],
         "coverage_ratio": res["coverage_ratio"],
@@ -84,6 +88,10 @@ def flatten_python(res: Dict[str, Any]) -> Dict[str, Any]:
         "joint_counts": joints["counts"],
         "joint_severities": _severities(joints["verdicts"], joints["angle_verdicts"]),
     }
+    # Keys added with the lesson features appear only when set, so older snapshot entries stay byte-identical.
+    if res["shape"].get("arm_error_deg") is not None:
+        out["arm_error_deg"] = res["shape"]["arm_error_deg"]
+    return out
 
 
 def flatten_swift(item: Dict[str, Any]) -> Dict[str, Any]:
@@ -114,6 +122,7 @@ def flatten_swift(item: Dict[str, Any]) -> Dict[str, Any]:
         "joint_top_hint": joints.get("top_hint"),
         "joint_counts": joints.get("counts"),
         "joint_severities": _severities(joints.get("verdicts", []), joints.get("angle_verdicts", [])),
+        "arm_error_deg": item.get("arm_error_deg"),
     }
 
 
@@ -124,7 +133,10 @@ def compute_python_scores(config_path: Path, dataset_path: Path) -> List[Dict[st
 
     references = dataset["references"]
     return [
-        flatten_python(score_attempt(clip, references[clip["move_tag"]], config)) for clip in dataset["golden_clips"]
+        flatten_python(
+            score_attempt(clip, references[clip["move_tag"]], merge_config(config, clip.get("config_overrides")))
+        )
+        for clip in dataset["golden_clips"]
     ]
 
 

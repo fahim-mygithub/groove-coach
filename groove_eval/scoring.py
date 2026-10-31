@@ -12,8 +12,15 @@ Implements:
 8. Hit timing: settle-after-move hits (MoveSegmenter) paired to beats vs the reference's hits (`hits`).
 9. Per-joint verdicts + correction hints from golden-performance tolerances (`joint_tolerance`).
 10. Hand styling score when hand landmarks are present; absent hands skip the component (`hands`).
+11. Arm shape term from torso-frame unit bone vectors (`shape.arm_weight`, default 0 = off).
+12. Timing gate source: knee bounce turnarounds or settle-after-move hits (`gate.timing_source`, default `bounce`).
+13. Reference `windows` (from the lesson manifest via `lesson_package.slice_reference`): `hand_shape` masks and
+    per-joint tolerance scales.
+14. Bone-length retargeting of the reference onto the learner (`retarget.enabled`, default off; `retarget.py`).
+15. Joint-verdict tolerances widened by reference angular velocity and by occlusion (`tolerance`, default off).
 
-New components report but do not gate `passed` unless their `gate` flag is set in the config.
+New components report but do not gate `passed` unless their `gate` flag is set in the config. Every new key defaults
+to the behaviour before it existed, so `fixtures/expected_scores_snapshot.json` is unchanged by them.
 """
 
 from __future__ import annotations
@@ -23,7 +30,8 @@ import math
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
-from groove_eval import hand_styling, joint_tolerance, segmentation
+from groove_eval import hand_styling, joint_tolerance, retarget, segmentation
+from groove_eval.canonical_skeleton import CANONICAL_BONES
 from groove_eval.one_euro import OneEuroLandmarkBank
 
 Vec3 = Tuple[float, float, float]
@@ -87,6 +95,23 @@ DEFAULT_JOINT_TOLERANCE: Dict[str, Any] = {
     "warn_factor": 2.0,
 }
 DEFAULT_HANDS: Dict[str, Any] = {"enabled": True, "gate": False, "pass_min_score": 60.0}
+# Spec §3.2 / body-extrapolation additions; all default to off. Mirrored by the Swift `RetargetConfig`,
+# `ToleranceConfig` and `OcclusionConfig`; documented in config/groove_config.json (`_notes`).
+DEFAULT_RETARGET: Dict[str, Any] = {"enabled": False}
+DEFAULT_TOLERANCE: Dict[str, Any] = {
+    "velocity_scale": 0.0,
+    "velocity_max_factor": 3.0,
+    "velocity_half_window_s": 0.05,
+    "occlusion": {"min_confidence": 0.5, "wrist_distance": 0.0, "factor": 1.0, "mask": False},
+}
+TIMING_SOURCES = ("bounce", "hits")
+# (term, from joint, to joint): upper arm and forearm on each side, for the `shape.arm_weight` term.
+ARM_BONES = (
+    ("leftUpperArm", "leftShoulder", "leftElbow"),
+    ("leftForearm", "leftElbow", "leftWrist"),
+    ("rightUpperArm", "rightShoulder", "rightElbow"),
+    ("rightForearm", "rightElbow", "rightWrist"),
+)
 HAND_SIDES = ("left", "right")
 HAND_LABEL_ORDER = hand_styling.SHAPE_LABELS + ("unknown",)
 
@@ -94,6 +119,30 @@ HAND_LABEL_ORDER = hand_styling.SHAPE_LABELS + ("unknown",)
 def _section(thresholds: Dict[str, Any], name: str, defaults: Dict[str, Any]) -> Dict[str, Any]:
     merged = dict(defaults)
     merged.update(thresholds.get(name) or {})
+    return merged
+
+
+def deep_merge(base: Dict[str, Any], override: Dict[str, Any]) -> Dict[str, Any]:
+    """Recursive dict merge; override wins on leaves and non-dict values replace whole subtrees.
+
+    Same rule as `lesson_package.deep_merge`, `GrooveScoringEngine.deepMerge` (Swift) and groove-score-cli."""
+    out: Dict[str, Any] = {k: (deep_merge(v, {}) if isinstance(v, dict) else v) for k, v in base.items()}
+    for key, value in override.items():
+        if isinstance(value, dict) and isinstance(out.get(key), dict):
+            out[key] = deep_merge(out[key], value)
+        else:
+            out[key] = deep_merge(value, {}) if isinstance(value, dict) else value
+    return out
+
+
+def merge_config(config: Dict[str, Any], *overrides: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """The config with each `config_overrides` object deep-merged over it in order (bundled < lesson < segment).
+
+    Overrides are merged into the JSON before any section is read, like the Swift side merges before decoding."""
+    merged = deep_merge(config, {})
+    for override in overrides:
+        if override:
+            merged = deep_merge(merged, override)
     return merged
 
 
@@ -136,6 +185,11 @@ def _angle_between_deg(u: Vec3, v: Vec3) -> float:
     vn = _normalize(v)
     cos_val = max(-1.0, min(1.0, _dot(un, vn)))
     return math.degrees(math.acos(cos_val))
+
+
+def _angle_between_rad(u: Vec3, v: Vec3) -> float:
+    cos_val = max(-1.0, min(1.0, _dot(_normalize(u), _normalize(v))))
+    return math.acos(cos_val)
 
 
 def apply_gravity_correction(point: Vec3, gravity_vector: Vec3) -> Vec3:
@@ -461,6 +515,33 @@ def score_timing(
     }
 
 
+def torso_frame_arm_vectors(pose: Dict[str, List[float]]) -> Optional[Dict[str, Vec3]]:
+    """Unit upper-arm / forearm directions in the torso frame of a `body_normalized_pose_at` pose (root at origin).
+
+    Torso frame (Gram-Schmidt): e1 = hip left -> right, e2 = root -> centerShoulder made orthogonal to e1,
+    e3 = e1 x e2. It cancels the dancer's torso yaw, so only where the arm points relative to the body counts. None
+    when the hips or centerShoulder are missing or the frame is degenerate; bones with a missing joint are left out.
+    """
+    lh, rh, cs = pose.get("leftHip"), pose.get("rightHip"), pose.get("centerShoulder")
+    if lh is None or rh is None or cs is None:
+        return None
+    e1 = _normalize(_sub(rh, lh))
+    up: Vec3 = (cs[0], cs[1], cs[2])
+    proj = _dot(up, e1)
+    e2 = _normalize((up[0] - e1[0] * proj, up[1] - e1[1] * proj, up[2] - e1[2] * proj))
+    if _norm(e1) < 0.5 or _norm(e2) < 0.5:
+        return None
+    e3 = _cross(e1, e2)
+    out: Dict[str, Vec3] = {}
+    for name, a, b in ARM_BONES:
+        pa, pb = pose.get(a), pose.get(b)
+        if pa is None or pb is None:
+            continue
+        v = _sub(pb, pa)
+        out[name] = _normalize((_dot(v, e1), _dot(v, e2), _dot(v, e3)))
+    return out
+
+
 def score_shape(
     user_features: List[Dict[str, float]],
     ref_features: List[Dict[str, float]],
@@ -468,10 +549,23 @@ def score_shape(
     per_beat_timing: List[Dict[str, Any]],
     audio_latency_ms: float,
     shape_cfg: Dict[str, float],
+    user_frames: Optional[Sequence[Dict[str, Any]]] = None,
+    ref_frames: Optional[Sequence[Dict[str, Any]]] = None,
+    user_gravity: Vec3 = (0.0, -1.0, 0.0),
+    ref_gravity: Vec3 = (0.0, -1.0, 0.0),
+    mirror: bool = False,
 ) -> Dict[str, Any]:
-    """Phase-shifted Shape score: shifts user curve by measured turnaround offset so timing isn't double-penalized."""
+    """Phase-shifted Shape score: shifts user curve by measured turnaround offset so timing isn't double-penalized.
+
+    With `shape.arm_weight` > 0 (and frames given) an `arms` term joins the joint groups: the mean angle (deg) between
+    learner and reference torso-frame unit bone vectors (both upper arms and forearms) at the same samples. The arms
+    take `arm_weight` of the total and the other weights are scaled by (1 - arm_weight). Without arm samples (no
+    elbows / wrists tracked) the term is left out and the weights are unchanged.
+    """
     max_err = float(shape_cfg.get("max_angle_error_deg", 45.0))
     foot_weight = float(shape_cfg.get("foot_pitch_weight", 0.30))
+    arm_weight = float(shape_cfg.get("arm_weight", 0.0))
+    arms_on = arm_weight > 0.0 and user_frames is not None and ref_frames is not None
 
     joint_keys = [
         ("knees", "mean_knee_flex", 0.30),
@@ -483,6 +577,7 @@ def score_shape(
 
     joint_errors: Dict[str, List[float]] = {name: [] for name, _, _ in joint_keys}
     lateral_errors: List[float] = []
+    arm_errors: List[float] = []
 
     for idx, b_time in enumerate(beat_times):
         beat_info = per_beat_timing[idx]
@@ -502,16 +597,32 @@ def score_shape(
             x_usr = _interpolate_feature_at(user_features, t_usr, "hip_x_norm")
             lateral_errors.append(abs(x_usr - x_ref) * 90.0)
 
+            if arms_on:
+                r_vecs = torso_frame_arm_vectors(body_normalized_pose_at(ref_frames, t_ref, ref_gravity, False))  # type: ignore[arg-type]
+                u_vecs = torso_frame_arm_vectors(body_normalized_pose_at(user_frames, t_usr, user_gravity, mirror))  # type: ignore[arg-type]
+                if r_vecs is not None and u_vecs is not None:
+                    for bone, _, _ in ARM_BONES:
+                        if bone in r_vecs and bone in u_vecs:
+                            arm_errors.append(_angle_between_deg(u_vecs[bone], r_vecs[bone]))
+
     mean_joint_err = {
         name: sum(vals) / max(1, len(vals)) for name, vals in joint_errors.items()
     }
     mean_joint_err["hips"] += sum(lateral_errors) / max(1, len(lateral_errors))
 
+    arm_error: Optional[float] = None
+    if arms_on and arm_errors:
+        arm_error = sum(arm_errors) / len(arm_errors)
+        mean_joint_err["arms"] = arm_error
+    other_scale = (1.0 - arm_weight) if arm_error is not None else 1.0
+
     weighted_score = 0.0
     for joint_name, _, weight in joint_keys:
         err = mean_joint_err[joint_name]
         component = max(0.0, 100.0 * (1.0 - (err / max_err)))
-        weighted_score += weight * component
+        weighted_score += (weight * other_scale) * component
+    if arm_error is not None:
+        weighted_score += arm_weight * max(0.0, 100.0 * (1.0 - (arm_error / max_err)))
 
     worst_joints = sorted(
         [
@@ -536,6 +647,7 @@ def score_shape(
         "shape_score": round(weighted_score, 2),
         "worst_joints": worst_joints,
         "joint_errors": {k: round(v, 2) for k, v in mean_joint_err.items()},
+        "arm_error_deg": None if arm_error is None else round(arm_error, 2),
     }
 
 
@@ -840,6 +952,104 @@ def compute_joint_tolerances(
     }
 
 
+def windows_at(windows: Sequence[Dict[str, Any]], t: float) -> List[Dict[str, Any]]:
+    """The reference windows covering time t (start_s <= t < end_s), in list order."""
+    return [w for w in windows if float(w["start_s"]) <= t < float(w["end_s"])]
+
+
+def _nearest_frame_index(frames: Sequence[Dict[str, Any]], t_query: float) -> int:
+    best = 0
+    best_d = math.inf
+    for i, f in enumerate(frames):
+        d = abs(float(f["t"]) - t_query)
+        if d < best_d:
+            best_d = d
+            best = i
+    return best
+
+
+def reference_velocity_factors(
+    ref_frames: Sequence[Dict[str, Any]],
+    t_ref: float,
+    ref_gravity: Vec3,
+    tol_cfg: Dict[str, Any],
+) -> Tuple[Dict[str, float], Dict[str, float]]:
+    """Velocity tolerance factors (positions, angles) at t_ref: min(max_factor, 1 + alpha * |omega_j(t)|).
+
+    omega_j (rad/s) is the reference's angular velocity from body-normalised poses at t_ref -/+ h
+    (h = `velocity_half_window_s`): for a joint position, the turn rate of the bone that ends at it (its
+    `CANONICAL_BONES` parent -> joint); for a joint angle (knees, elbows), the rate of change of that angle.
+    Fast ballistic moves get wider tolerances, held poses keep the base tolerance."""
+    alpha = float(tol_cfg["velocity_scale"])
+    cap = float(tol_cfg["velocity_max_factor"])
+    h = float(tol_cfg["velocity_half_window_s"])
+    pos: Dict[str, float] = {}
+    ang: Dict[str, float] = {}
+    if h <= 0.0:
+        return pos, ang
+    before = body_normalized_pose_at(ref_frames, t_ref - h, ref_gravity, False)
+    after = body_normalized_pose_at(ref_frames, t_ref + h, ref_gravity, False)
+    origin = [0.0, 0.0, 0.0]
+    for child, parent in CANONICAL_BONES:
+        c0, c1 = before.get(child), after.get(child)
+        p0 = origin if parent == "root" else before.get(parent)
+        p1 = origin if parent == "root" else after.get(parent)
+        if c0 is None or c1 is None or p0 is None or p1 is None:
+            continue
+        b0, b1 = _sub(c0, p0), _sub(c1, p1)
+        if _norm(b0) < 1e-9 or _norm(b1) < 1e-9:
+            continue
+        omega = _angle_between_rad(b0, b1) / (2.0 * h)
+        pos[child] = min(cap, 1.0 + alpha * omega)
+    for triple in joint_tolerance.DEFAULT_ANGLE_TRIPLES:
+        a0 = joint_tolerance._angle_deg(before, triple)
+        a1 = joint_tolerance._angle_deg(after, triple)
+        if a0 is None or a1 is None:
+            continue
+        omega = (abs(a1 - a0) / (2.0 * h)) * math.pi / 180.0
+        ang[triple["name"]] = min(cap, 1.0 + alpha * omega)
+    return pos, ang
+
+
+def occluded_joints(
+    names: Sequence[str],
+    ref_frames: Sequence[Dict[str, Any]],
+    user_frames: Sequence[Dict[str, Any]],
+    t_ref: float,
+    t_usr: float,
+    ref_pose: Dict[str, List[float]],
+    usr_pose: Dict[str, List[float]],
+    mirror: bool,
+    occ_cfg: Dict[str, Any],
+) -> List[str]:
+    """Joints (of `names`) treated as occluded on this beat.
+
+    A joint is occluded when its confidence in the nearest reference or learner frame is below `min_confidence`
+    (a missing confidence counts as 1), and both wrists are when the wrists are closer than `wrist_distance`
+    (leg lengths, either pose; 0 = off), as in a clasp. A joint angle (knee, elbow) is occluded when any of its
+    three joints is, and is listed under the angle's name."""
+    min_conf = float(occ_cfg["min_confidence"])
+    wrist_d = float(occ_cfg["wrist_distance"])
+    ref_conf = ref_frames[_nearest_frame_index(ref_frames, t_ref)].get("confidences") or {}
+    usr_conf = user_frames[_nearest_frame_index(user_frames, t_usr)].get("confidences") or {}
+    close = False
+    if wrist_d > 0.0:
+        for pose in (ref_pose, usr_pose):
+            lw, rw = pose.get("leftWrist"), pose.get("rightWrist")
+            if lw is not None and rw is not None and _norm(_sub(lw, rw)) < wrist_d:
+                close = True
+    def occluded(name: str) -> bool:
+        rc = float(ref_conf.get(name, 1.0))
+        uc = float(usr_conf.get(retarget.mirror_name(name) if mirror else name, 1.0))
+        return min(rc, uc) < min_conf or (close and name in ("leftWrist", "rightWrist"))
+
+    out: List[str] = [name for name in names if occluded(name)]
+    for triple in joint_tolerance.DEFAULT_ANGLE_TRIPLES:
+        if triple["name"] not in out and any(occluded(triple[k]) for k in ("parent", "joint", "child")):
+            out.append(triple["name"])
+    return out
+
+
 def score_joint_feedback(
     user_frames: Sequence[Dict[str, Any]],
     ref_frames: Sequence[Dict[str, Any]],
@@ -851,11 +1061,18 @@ def score_joint_feedback(
     mirror: bool,
     tolerances: Dict[str, Dict[str, float]],
     jt_cfg: Dict[str, Any],
+    windows: Optional[Sequence[Dict[str, Any]]] = None,
+    tol_cfg: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Per-joint ok/warn/off verdicts with correction hints, averaged over the phase-aligned beats.
 
     Severity uses the mean per-beat error vs the golden tolerance; the hint follows the mean learner -> reference
-    displacement (positions) or the mean signed angle difference (knees / elbows)."""
+    displacement (positions) or the mean signed angle difference (knees / elbows).
+
+    Each beat's error is divided by that joint's tolerance scale on the beat, the product of: the `tolerance_scale`
+    of every reference window covering the beat, the velocity factor (`tolerance.velocity_scale`) and the occlusion
+    factor (`tolerance.occlusion.factor`) when the joint is occluded. With `tolerance.occlusion.mask` an occluded
+    joint's beat is left out instead. All scales default to 1, so `error` is then the plain mean error."""
     result: Dict[str, Any] = {
         "status": "disabled",
         "verdicts": [],
@@ -869,6 +1086,14 @@ def score_joint_feedback(
     warn_factor = float(jt_cfg["warn_factor"])
     pos_tol = tolerances["positions"]
     ang_tol = tolerances["angles"]
+    windows = list(windows or [])
+    tol_cfg = deep_merge(DEFAULT_TOLERANCE, tol_cfg or {})
+    velocity_on = float(tol_cfg["velocity_scale"]) != 0.0
+    occ_cfg = tol_cfg["occlusion"]
+    occ_factor = float(occ_cfg["factor"])
+    occ_mask = bool(occ_cfg["mask"])
+    occlusion_on = occ_mask or occ_factor != 1.0
+    occ_names = sorted(set(pos_tol) | {t["name"] for t in joint_tolerance.DEFAULT_ANGLE_TRIPLES})
 
     pos_err: Dict[str, List[float]] = {}
     pos_delta: Dict[str, List[float]] = {}
@@ -881,24 +1106,47 @@ def score_joint_feedback(
         usr_pose = body_normalized_pose_at(user_frames, t_usr, user_gravity, mirror)
         if not ref_pose or not usr_pose:
             continue
+        active = windows_at(windows, t_ref)
+        vel_pos, vel_ang = (
+            reference_velocity_factors(ref_frames, t_ref, ref_gravity, tol_cfg) if velocity_on else ({}, {})
+        )
+        occluded = (
+            occluded_joints(occ_names, ref_frames, user_frames, t_ref, t_usr, ref_pose, usr_pose, mirror, occ_cfg)
+            if occlusion_on
+            else []
+        )
+
+        def scale(name: str, velocity: Dict[str, float]) -> float:
+            s = 1.0
+            for w in active:
+                ts = w.get("tolerance_scale") or {}
+                if name in ts:
+                    s *= float(ts[name])
+            if name in velocity:
+                s *= velocity[name]
+            if name in occluded:
+                s *= occ_factor
+            return s
+
         for name in sorted(pos_tol):
             r, u = ref_pose.get(name), usr_pose.get(name)
-            if r is None or u is None:
+            if r is None or u is None or (occ_mask and name in occluded):
                 continue
             d = [r[k] - u[k] for k in range(3)]
-            pos_err.setdefault(name, []).append(math.sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]))
+            err = math.sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2])
+            pos_err.setdefault(name, []).append(err / scale(name, vel_pos))
             acc = pos_delta.setdefault(name, [0.0, 0.0, 0.0])
             for k in range(3):
                 acc[k] += d[k]
         for triple in joint_tolerance.DEFAULT_ANGLE_TRIPLES:
             name = triple["name"]
-            if name not in ang_tol:
+            if name not in ang_tol or (occ_mask and name in occluded):
                 continue
             ra = joint_tolerance._angle_deg(ref_pose, triple)
             ua = joint_tolerance._angle_deg(usr_pose, triple)
             if ra is None or ua is None:
                 continue
-            ang_err.setdefault(name, []).append(abs(ua - ra))
+            ang_err.setdefault(name, []).append(abs(ua - ra) / scale(name, vel_ang))
             ang_signed[name] = ang_signed.get(name, 0.0) + (ra - ua)
 
     ratios: List[Tuple[float, Dict[str, Any]]] = []
@@ -983,27 +1231,35 @@ def score_hand_styling(
     audio_latency_ms: float,
     mirror: bool,
     hands_cfg: Dict[str, Any],
+    windows: Optional[Sequence[Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
     """Hand-shape similarity (0-100) vs the reference at the phase-aligned beat samples.
 
     Only hands present in both learner and reference frames count; with no such sample the component is `skipped`
-    (never scored as zero)."""
+    (never scored as zero). Samples inside a reference window whose `mask` lists `hand_shape` (the clasps, where the
+    two hands merge) are left out and counted in `masked_samples`."""
     result: Dict[str, Any] = {
         "status": "disabled",
         "hand_score": None,
         "samples": 0,
+        "masked_samples": 0,
         "user_shape": None,
         "reference_shape": None,
     }
     if not bool(hands_cfg["enabled"]):
         return result
+    masks = [w for w in (windows or []) if "hand_shape" in (w.get("mask") or [])]
     sims: List[float] = []
     user_labels: List[str] = []
     ref_labels: List[str] = []
+    masked = 0
     for idx, b_time in enumerate(beat_times):
         shift = _beat_shift_s(per_beat_timing[idx], audio_latency_ms)
         for sample_delta in (-0.12, 0.0, 0.12):
             t_ref = float(b_time) + sample_delta
+            if windows_at(masks, t_ref):
+                masked += 1
+                continue
             ref_hands = _hands_at(ref_frames, t_ref, False)
             usr_hands = _hands_at(user_frames, t_ref + shift, mirror)
             for side in HAND_SIDES:
@@ -1016,6 +1272,7 @@ def score_hand_styling(
                 sims.append(hand_styling.compare_hand_features(uf, rf))
                 user_labels.append(str(hand_styling.classify_hand_shape(uf)["label"]))
                 ref_labels.append(str(hand_styling.classify_hand_shape(rf)["label"]))
+    result["masked_samples"] = masked
     if not sims:
         result["status"] = "skipped"
         return result
@@ -1040,12 +1297,24 @@ def score_attempt(
     """Full deterministic scoring pipeline for a single attempt vs. reference move.
 
     `golden_clips` are extra clean performances of the same move used (with the reference) to derive per-joint
-    tolerances; by default the reference alone is used.
+    tolerances; by default the reference alone is used. Lesson / segment `config_overrides` are applied to `config`
+    with `merge_config` before calling. With `retarget.enabled` the reference and golden clips are first re-walked
+    with the learner's bone lengths (`retarget.learner_bone_lengths`). `reference_clip["windows"]` (as produced by
+    `lesson_package.slice_reference` / `stretch`) masks hand shapes and scales joint tolerances.
     """
     if config is None:
         config = load_config()
 
     thresholds = config["scoring_thresholds"]
+    retarget_cfg = _section(thresholds, "retarget", DEFAULT_RETARGET)
+    retargeted = bool(retarget_cfg["enabled"])
+    if retargeted:
+        lengths = retarget.learner_bone_lengths(attempt_clip)
+        reference_clip = retarget.retarget_clip(reference_clip, lengths)
+        golden_clips = [retarget.retarget_clip(g, lengths) for g in (golden_clips or [])]
+    tol_cfg = deep_merge(DEFAULT_TOLERANCE, thresholds.get("tolerance") or {})
+    windows: List[Dict[str, Any]] = list(reference_clip.get("windows") or [])
+    timing_source = str(thresholds["gate"].get("timing_source", "bounce"))
     min_conf = float(thresholds["coverage"]["min_joint_confidence"])
     min_valid_ratio = float(thresholds["coverage"]["min_valid_frame_ratio"])
     coverage_ratio = score_coverage(attempt_clip["frames"], min_conf)
@@ -1087,6 +1356,11 @@ def score_attempt(
         timing_res["per_beat"],
         audio_latency_ms,
         thresholds["shape"],
+        user_frames,
+        ref_frames,
+        user_gravity,
+        ref_gravity,
+        mirror,
     )
     shape_res["foot_scoring_status"] = foot_scoring_status
 
@@ -1107,15 +1381,22 @@ def score_attempt(
         mirror,
         tolerances,
         jt_cfg,
+        windows,
+        tol_cfg,
     )
     hands_res = score_hand_styling(
-        user_frames, ref_frames, beat_times, timing_res["per_beat"], audio_latency_ms, mirror, hands_cfg
+        user_frames, ref_frames, beat_times, timing_res["per_beat"], audio_latency_ms, mirror, hands_cfg, windows
     )
 
     coverage_ok = coverage_ratio >= min_valid_ratio
-    timing_ok = timing_res["good_or_better_ratio"] >= float(
-        thresholds["gate"]["min_good_or_better_beat_ratio"]
-    )
+    min_beat_ratio = float(thresholds["gate"]["min_good_or_better_beat_ratio"])
+    bounce_ok = timing_res["good_or_better_ratio"] >= min_beat_ratio
+    if timing_source == "hits":
+        # Arm-led moves: the settle-after-move hits gate timing and the bounce turnarounds are informational. A
+        # reference without hits (or hits disabled) has nothing to time, so it never fails the gate.
+        timing_ok = hits_res["status"] != "available" or hits_res["on_beat_ratio"] >= min_beat_ratio
+    else:
+        timing_ok = bounce_ok
     shape_ok = shape_res["shape_score"] >= float(thresholds["shape"]["pass_min_score"])
     groove_ok = groove_res["groove_score"] >= float(thresholds["groove"]["pass_min_score"])
 
@@ -1151,6 +1432,9 @@ def score_attempt(
             f"Shape error on {wj['joint']} (avg {wj['mean_angle_error_deg']:.1f} deg off, "
             f"worst timing at count {wb['count_number']} by {wb['offset_ms']:+.0f} ms)."
         )
+    elif not timing_ok and timing_source == "hits":
+        landed = sum(1 for h in hits_res["per_hit"] if h["judgment"] in ("Perfect", "Good"))
+        top_issue = f"Hit timing off: {landed}/{len(hits_res['per_hit'])} accents on the beat."
     elif not timing_ok:
         top_issue = (
             f"Timing {wb['judgment'].lower()} on count {wb['count_number']} by {wb['offset_ms']:+.0f} ms "
@@ -1171,6 +1455,8 @@ def score_attempt(
             f"Hand styling off ({hands_res['user_shape']} vs {hands_res['reference_shape']}, "
             f"score {hands_res['hand_score']:.0f})."
         )
+    elif timing_source == "hits" and hits_res["status"] == "available":
+        top_issue = f"Clean pass: {hits_res['on_beat_ratio']:.0%} of accents on the beat."
     else:
         top_issue = (
             f"Clean pass: {timing_res['good_or_better_ratio']:.0%} beats Good+, "
@@ -1204,6 +1490,8 @@ def score_attempt(
         "coverage_ratio": round(coverage_ratio, 3),
         "foot_scoring_status": foot_scoring_status,
         "smoothing_applied": smoothing_on,
+        "retargeted": retargeted,
+        "timing_gate": {"source": timing_source, "passed": timing_ok, "bounce_passed": bounce_ok},
         "timing": timing_res,
         "shape": shape_res,
         "groove": groove_res,

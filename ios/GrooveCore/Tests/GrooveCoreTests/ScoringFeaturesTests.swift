@@ -195,4 +195,186 @@ final class ScoringFeaturesTests: XCTestCase {
         XCTAssertTrue(scoreFeature("feat_03_no_hits_no_hands", gated).passed)
         XCTAssertFalse(scoreFeature("feat_02_hits_late_fist_hands", gated).passed)
     }
+
+    // MARK: - Lesson windows, rate stretch, velocity and occlusion (mirror of TestLessonFeatures)
+
+    private func flagged(_ r: GrooveScoringEngine.AttemptScoreResult) -> Set<String> {
+        Set((r.joint_feedback.verdicts + r.joint_feedback.angle_verdicts).filter { $0.severity != "ok" }.map { $0.joint })
+    }
+
+    private func errors(_ r: GrooveScoringEngine.AttemptScoreResult) -> [String: Double] {
+        Dictionary(uniqueKeysWithValues: r.joint_feedback.verdicts.map { ($0.joint, $0.error) })
+    }
+
+    func testWindowsComeFromTheManifestSlice() throws {
+        let f = try LessonFixtures.get()
+        let ref = try XCTUnwrap(f.dataset.references["clasp_windowed"])
+        let windows = ref.windows ?? []
+        XCTAssertEqual(windows.count, 1)
+        let w = try XCTUnwrap(windows.first)
+        XCTAssertEqual(w.mask ?? [], ["hand_shape"])
+        XCTAssertEqual(w.start_s, ref.beat_times[2] - 0.2, accuracy: 1e-4)
+        XCTAssertEqual(GrooveScoringEngine.windowsAt(windows, ref.beat_times[3]).count, 1)
+        XCTAssertTrue(GrooveScoringEngine.windowsAt(windows, ref.beat_times[0]).isEmpty)
+        XCTAssertTrue(GrooveScoringEngine.windowsAt(windows, w.end_s).isEmpty)
+        XCTAssertEqual(f.dataset.references["clasp"]?.windows?.count, 0)
+    }
+
+    func testClaspWindowMasksHandsAndScalesWrists() throws {
+        let f = try LessonFixtures.get()
+        let plain = try f.score("lesson_07_clasp_no_window")
+        let windowed = try f.score("lesson_08_clasp_window_mask")
+        let near = try f.score("lesson_09_clasp_wrist_proximity")
+        XCTAssertTrue(flagged(plain).isSuperset(of: ["leftWrist", "rightWrist"]))
+        XCTAssertEqual(plain.hand_styling.masked_samples, 0)
+        XCTAssertLessThan(plain.hand_styling.hand_score ?? 100, 80.0)
+        XCTAssertEqual(windowed.hand_styling.masked_samples, 12)
+        XCTAssertEqual(windowed.hand_styling.hand_score ?? 0, 100.0, accuracy: 1e-9)
+        XCTAssertTrue(flagged(windowed).isEmpty)
+        XCTAssertEqual(near.hand_styling.masked_samples, 0)
+        XCTAssertTrue(flagged(near).isDisjoint(with: ["leftWrist", "rightWrist"]))
+    }
+
+    func testRate70Stretch() throws {
+        let f = try LessonFixtures.get()
+        let ref = try XCTUnwrap(f.dataset.references["hits_rate_70"])
+        XCTAssertEqual(ref.speed_pct, 70)
+        XCTAssertEqual(ref.bpm, 112.5 * 0.7, accuracy: 1e-9)
+        let clean = try f.score("lesson_10_rate70_clean")
+        let late = try f.score("lesson_11_rate70_late")
+        XCTAssertTrue(clean.passed)
+        XCTAssertEqual(clean.hit_timing.status, "available")
+        XCTAssertGreaterThanOrEqual(clean.hit_timing.hit_score ?? 0, 95.0)
+        XCTAssertFalse(late.passed)
+        XCTAssertGreaterThan(late.mean_offset_ms, 120.0)
+    }
+
+    func testVelocityFactorsFollowTheReferenceSpeed() throws {
+        let f = try LessonFixtures.get()
+        let ref = try XCTUnwrap(f.dataset.references["arm_swing"])
+        let beat = ref.beat_times[2]
+        let g = GrooveScoringEngine.Vec3(0.0, -1.0, 0.0)
+        let cfg = GrooveScoringEngine.ToleranceConfig(velocity_scale: 0.5)
+        let (pos, ang) = GrooveScoringEngine.referenceVelocityFactors(refFrames: ref.frames, tRef: beat, refGravity: g, config: cfg)
+        XCTAssertGreaterThan(pos["leftWrist"] ?? 0, 2.0)
+        XCTAssertLessThanOrEqual(pos["leftWrist"] ?? 99, cfg.velocity_max_factor)
+        XCTAssertEqual(pos["leftShoulder"] ?? 0, 1.0, accuracy: 0.05)
+        XCTAssertNotNil(ang["leftKnee"])
+        let capped = GrooveScoringEngine.referenceVelocityFactors(
+            refFrames: ref.frames, tRef: beat, refGravity: g, config: .init(velocity_scale: 50.0)
+        ).0
+        XCTAssertEqual(capped["leftWrist"], cfg.velocity_max_factor)
+        let none = GrooveScoringEngine.referenceVelocityFactors(
+            refFrames: ref.frames, tRef: beat, refGravity: g, config: .init(velocity_scale: 0.5, velocity_half_window_s: 0.0)
+        )
+        XCTAssertTrue(none.0.isEmpty && none.1.isEmpty)
+    }
+
+    func testVelocityScalingForgivesFastBeats() throws {
+        let f = try LessonFixtures.get()
+        let off = try f.score("lesson_15_velocity_off")
+        let on = try f.score("lesson_16_velocity_scaled")
+        XCTAssertTrue(flagged(off).isSuperset(of: ["leftWrist", "rightWrist"]))
+        XCTAssertTrue(flagged(on).isEmpty)
+        let tolOff = Dictionary(uniqueKeysWithValues: off.joint_feedback.verdicts.map { ($0.joint, $0.tolerance) })
+        let tolOn = Dictionary(uniqueKeysWithValues: on.joint_feedback.verdicts.map { ($0.joint, $0.tolerance) })
+        XCTAssertEqual(tolOff, tolOn)
+    }
+
+    func testOcclusionWidensOrMasksDropouts() throws {
+        let f = try LessonFixtures.get()
+        let off = try f.score("lesson_17_occlusion_off")
+        let widened = try f.score("lesson_18_occlusion_widened")
+        let masked = try f.score("lesson_19_occlusion_masked")
+        XCTAssertTrue(flagged(off).isSuperset(of: ["leftWrist", "rightWrist"]))
+        XCTAssertTrue(flagged(widened).isEmpty)
+        XCTAssertTrue(flagged(masked).isEmpty)
+        let eOff = errors(off)
+        let eWidened = errors(widened)
+        let eMasked = errors(masked)
+        XCTAssertLessThan(eWidened["leftWrist"] ?? 99, eOff["leftWrist"] ?? 0)
+        XCTAssertLessThan(eMasked["leftWrist"] ?? 99, eWidened["leftWrist"] ?? 0)
+        XCTAssertEqual(eMasked["leftHip"], eOff["leftHip"])
+    }
+
+    func testNewKeysAreNoOpsOnExistingFixtures() throws {
+        let data = try LessonFixtures.get().configData
+        let neutral = try GrooveScoringEngine.decodeConfig(data, overrides: [LessonFixtures.json(
+            #"{"scoring_thresholds": {"tolerance": {"velocity_scale": 0.0, "occlusion": {"factor": 1.0, "mask": false}}, "retarget": {"enabled": false}}}"#
+        )])
+        let a = scoreFeature("feat_02_hits_late_fist_hands")
+        let b = scoreFeature("feat_02_hits_late_fist_hands", neutral)
+        XCTAssertEqual(a.shape_score, b.shape_score)
+        XCTAssertEqual(a.joint_feedback.counts, b.joint_feedback.counts)
+        XCTAssertEqual(a.joint_feedback.verdicts.map { $0.error }, b.joint_feedback.verdicts.map { $0.error })
+        XCTAssertEqual(a.hand_styling.hand_score, b.hand_styling.hand_score)
+        XCTAssertNil(a.arm_error_deg)
+        XCTAssertFalse(a.retargeted)
+        XCTAssertEqual(a.timing_source, "bounce")
+    }
+}
+
+/// fixtures/lesson_clips.json plus each clip's `config_overrides`, deep-merged over config/groove_config.json before
+/// decoding like groove-score-cli. Shared by ScoringEngineTests, ScoringFeaturesTests and RetargetTests.
+enum LessonFixtures {
+    struct Dataset: Codable, Sendable {
+        let references: [String: GrooveScoringEngine.PoseClip]
+        let golden_clips: [GrooveScoringEngine.PoseClip]
+    }
+
+    private struct OverrideItem: Decodable {
+        let clip_id: String
+        let config_overrides: GrooveScoringEngine.JSONValue?
+    }
+
+    private struct Overrides: Decodable {
+        let golden_clips: [OverrideItem]
+    }
+
+    struct Loaded: Sendable {
+        let configData: Data
+        let dataset: Dataset
+        let overrides: [String: GrooveScoringEngine.JSONValue]
+
+        func clip(_ id: String) -> GrooveScoringEngine.PoseClip {
+            dataset.golden_clips.first { $0.clip_id == id }!
+        }
+
+        func config(_ id: String) throws -> GrooveScoringEngine.GrooveConfig {
+            try GrooveScoringEngine.decodeConfig(configData, overrides: overrides[id].map { [$0] } ?? [])
+        }
+
+        func score(_ id: String) throws -> GrooveScoringEngine.AttemptScoreResult {
+            let c = clip(id)
+            return GrooveScoringEngine.scoreAttempt(attempt: c, reference: dataset.references[c.move_tag]!, config: try config(id))
+        }
+    }
+
+    static let repoRoot: URL = URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent() // GrooveCoreTests
+        .deletingLastPathComponent() // Tests
+        .deletingLastPathComponent() // GrooveCore
+        .deletingLastPathComponent() // ios
+        .deletingLastPathComponent() // repo root
+
+    /// Decoded once per test run (the fixture is ~5 MB).
+    private static let shared: Result<Loaded, Error> = Result {
+        let configData = try Data(contentsOf: repoRoot.appendingPathComponent("config/groove_config.json"))
+        let datasetData = try Data(contentsOf: repoRoot.appendingPathComponent("fixtures/lesson_clips.json"))
+        let decoder = JSONDecoder()
+        let dataset = try decoder.decode(Dataset.self, from: datasetData)
+        var overrides: [String: GrooveScoringEngine.JSONValue] = [:]
+        for item in try decoder.decode(Overrides.self, from: datasetData).golden_clips {
+            if let o = item.config_overrides { overrides[item.clip_id] = o }
+        }
+        return Loaded(configData: configData, dataset: dataset, overrides: overrides)
+    }
+
+    static func get() throws -> Loaded {
+        try shared.get()
+    }
+
+    static func json(_ text: String) throws -> GrooveScoringEngine.JSONValue {
+        try JSONDecoder().decode(GrooveScoringEngine.JSONValue.self, from: Data(text.utf8))
+    }
 }
