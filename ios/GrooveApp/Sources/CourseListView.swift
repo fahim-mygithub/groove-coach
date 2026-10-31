@@ -1,3 +1,5 @@
+import Foundation
+import GrooveCore
 import SwiftUI
 import UniformTypeIdentifiers
 
@@ -5,6 +7,7 @@ import UniformTypeIdentifiers
 /// - Course -> Lesson -> Segments (A, B, C, D and Full Run),
 /// - Downloads lesson packages atomically with SHA-256 validation,
 /// - DEV MODE: Ingests lesson packages directly from a folder in the Files app,
+/// - Adaptive speed rate badges and progression gating (locked until previous segment unlocks),
 /// - Email OTP login sheet for Supabase auth.
 public struct CourseListView: View {
     @EnvironmentObject private var lessonStore: LessonStore
@@ -153,8 +156,8 @@ public struct CourseListView: View {
     }
 
     private func seedFilmiRoutineDevPackage() {
-        let sample = LessonManifest.makeSampleFilmiManifest()
-        let dir = lessonStore.lessonVersionDirectory(lessonId: sample.lesson_id, version: sample.package_version)
+        let sample = LessonStore.makeSampleFilmiManifest()
+        let dir = lessonStore.lessonVersionDirectory(lessonId: sample.lessonID, version: sample.packageVersion)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         if let data = try? JSONEncoder().encode(sample) {
             try? data.write(to: dir.appendingPathComponent("manifest.json"), options: .atomic)
@@ -277,12 +280,12 @@ struct LessonDetailView: View {
     let item: CatalogItem
     @EnvironmentObject private var lessonStore: LessonStore
 
-    @State private var activeSegment: LessonManifest.SegmentInfo?
+    @State private var activeSegment: LessonPackage.Segment?
     @State private var isDownloading: Bool = false
     @State private var downloadError: String?
 
-    var manifest: LessonManifest {
-        item.manifest ?? lessonStore.loadManifest(lessonId: item.lesson_id, version: item.package_version) ?? LessonManifest.makeSampleFilmiManifest()
+    var manifest: LessonPackage.Manifest {
+        item.manifest ?? lessonStore.loadManifest(lessonId: item.lesson_id, version: item.package_version) ?? LessonStore.makeSampleFilmiManifest()
     }
 
     var isDownloaded: Bool {
@@ -296,13 +299,13 @@ struct LessonDetailView: View {
                 VStack(alignment: .leading, spacing: 8) {
                     Text(manifest.title)
                         .font(.title2.bold())
-                    Text("Course: \(manifest.course_slug) • Version \(manifest.package_version)")
+                    Text("Course: \(manifest.courseSlug) • Version \(manifest.packageVersion)")
                         .font(.caption)
                         .foregroundStyle(.secondary)
 
                     HStack(spacing: 16) {
-                        Label(String(format: "%.1f BPM", manifest.beat_grid.bpm), systemImage: "metronome")
-                        Label(String(format: "%.1fs", manifest.video.duration_s), systemImage: "clock")
+                        Label(String(format: "%.1f BPM", manifest.beatGrid.bpm), systemImage: "metronome")
+                        Label(String(format: "%.1fs", manifest.video.durationS), systemImage: "clock")
                         Label("\(manifest.segments.count) parts", systemImage: "list.number")
                     }
                     .font(.caption)
@@ -349,7 +352,12 @@ struct LessonDetailView: View {
             // Segments in teaching order A -> B -> C -> D -> full
             Section("Teaching Order: Segments & Full Run") {
                 ForEach(sortedSegments) { segment in
-                    SegmentRowView(segment: segment) {
+                    SegmentRowView(
+                        manifest: manifest,
+                        segment: segment,
+                        isUnlocked: lessonStore.isSegmentUnlocked(manifest: manifest, segmentID: segment.id),
+                        currentRate: lessonStore.currentRate(manifest: manifest, segmentID: segment.id)
+                    ) {
                         activeSegment = segment
                     }
                 }
@@ -366,8 +374,8 @@ struct LessonDetailView: View {
         }
     }
 
-    private var sortedSegments: [LessonManifest.SegmentInfo] {
-        manifest.segments.sorted(by: { $0.teach_order < $1.teach_order })
+    private var sortedSegments: [LessonPackage.Segment] {
+        manifest.segments.sorted(by: { $0.teachOrder < $1.teachOrder })
     }
 
     private func downloadPackage() async {
@@ -385,7 +393,10 @@ struct LessonDetailView: View {
 // MARK: - Segment Row View
 
 struct SegmentRowView: View {
-    let segment: LessonManifest.SegmentInfo
+    let manifest: LessonPackage.Manifest
+    let segment: LessonPackage.Segment
+    let isUnlocked: Bool
+    let currentRate: Double
     let onPlay: () -> Void
 
     var isFullRun: Bool {
@@ -408,18 +419,38 @@ struct SegmentRowView: View {
 
                 Spacer()
 
-                Button {
-                    onPlay()
-                } label: {
-                    Label("Practice", systemImage: "play.fill")
-                        .font(.caption.bold())
+                // Current adaptive speed rate badge
+                Text(String(format: "%.2fx", currentRate))
+                    .font(.caption.monospacedDigit().bold())
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 3)
+                    .background(Color.green.opacity(0.15), in: Capsule())
+                    .foregroundStyle(.green)
+
+                if isUnlocked {
+                    Button {
+                        onPlay()
+                    } label: {
+                        Label("Practice", systemImage: "play.fill")
+                            .font(.caption.bold())
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
+                } else {
+                    Button {
+                        onPlay()
+                    } label: {
+                        Label("Locked", systemImage: "lock.fill")
+                            .font(.caption)
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .tint(.secondary)
                 }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.small)
             }
 
             HStack(spacing: 12) {
-                Text(String(format: "%.2f–%.2fs", segment.start_s, segment.end_s))
+                Text(String(format: "%.2f–%.2fs", segment.startS, segment.endS))
                     .font(.caption2.monospacedDigit())
                     .foregroundStyle(.secondary)
 
@@ -439,6 +470,12 @@ struct SegmentRowView: View {
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
                 }
+            }
+
+            if !isUnlocked {
+                Text("Pass previous segment to advance.")
+                    .font(.caption2)
+                    .foregroundStyle(.orange)
             }
 
             if let cues = segment.cues, !cues.isEmpty {

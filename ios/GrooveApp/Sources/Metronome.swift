@@ -20,9 +20,15 @@ final class Metronome {
         AVAudioSession.sharedInstance().outputLatency * 1000.0
     }
 
-    /// Plays clicks at `clickTimes` (seconds from the start) and returns the host-clock time (seconds) of that start.
-    /// `accented` clicks are higher pitched (used for the count-in).
-    func start(clickTimes: [Double], accented: Set<Int>, duration: Double) throws -> Double {
+    /// Result of scheduling a metronome start: both host time in seconds and raw mach units.
+    struct ScheduledStart {
+        let hostSeconds: Double
+        let machTime: UInt64
+    }
+
+    /// Plays clicks at `clickTimes` (seconds from the start) and returns both the host-clock time (seconds)
+    /// and the mach_absolute_time units of that start for exact AVPlayer setRate(atHostTime:) synchronization.
+    func startScheduled(clickTimes: [Double], accented: Set<Int>, duration: Double) throws -> ScheduledStart {
         let session = AVAudioSession.sharedInstance()
         try session.setCategory(.playback, mode: .default, options: [.mixWithOthers])
         try session.setActive(true)
@@ -52,9 +58,16 @@ final class Metronome {
 
         player.stop()
         player.scheduleBuffer(buffer, at: nil, options: [], completionHandler: nil)
-        let startHostTime = mach_absolute_time() + AVAudioTime.hostTime(forSeconds: 0.25)
-        player.play(at: AVAudioTime(hostTime: startHostTime))
-        return AVAudioTime.seconds(forHostTime: startHostTime)
+        let startHostMachTime = mach_absolute_time() + AVAudioTime.hostTime(forSeconds: 0.25)
+        player.play(at: AVAudioTime(hostTime: startHostMachTime))
+        let hostSeconds = AVAudioTime.seconds(forHostTime: startHostMachTime)
+        return ScheduledStart(hostSeconds: hostSeconds, machTime: startHostMachTime)
+    }
+
+    /// Plays clicks at `clickTimes` (seconds from the start) and returns the host-clock time (seconds) of that start.
+    /// `accented` clicks are higher pitched (used for the count-in).
+    func start(clickTimes: [Double], accented: Set<Int>, duration: Double) throws -> Double {
+        try startScheduled(clickTimes: clickTimes, accented: accented, duration: duration).hostSeconds
     }
 
     func stop() {
