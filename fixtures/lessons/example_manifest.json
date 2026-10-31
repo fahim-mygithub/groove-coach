@@ -1,0 +1,342 @@
+{
+  "schema": "groove.lesson/1",
+  "lesson_id": "b6f14c2e-7d0a-4b8e-9c31-5a2f0e8d4b17",
+  "course_slug": "bollywood-basics",
+  "lesson_slug": "img4941-routine",
+  "package_version": 1,
+  "title": "Filmi Routine 1",
+  "requires": {
+    "engine_major": 2,
+    "skeleton": "groove.canonical/1"
+  },
+  "extractor": {
+    "pose_model": "pose_landmarker_full",
+    "pose_model_sha256": "5134a3aad27a58b93da0088d431f366da362b44e3ccfbe3462b3827a839011b1",
+    "mediapipe_python": "1.2.0",
+    "running_mode": "VIDEO",
+    "num_poses": 1
+  },
+  "video": {
+    "file": "video.mp4",
+    "duration_s": 16.33,
+    "fps": 30,
+    "width": 720,
+    "height": 1280,
+    "mirrored": false,
+    "default_display_flip": true
+  },
+  "poster": "poster.jpg",
+  "reference": {
+    "file": "reference_pose.json",
+    "frame_count": 490
+  },
+  "beat_grid": {
+    "bpm": 112.5,
+    "anchor_s": 0.53,
+    "source": "author_confirmed",
+    "detector": "beat_this_small_cpu",
+    "beats": [
+      {
+        "t": 0.53,
+        "phrase": 1,
+        "count": 1
+      },
+      {
+        "t": 1.063,
+        "phrase": 1,
+        "count": 2
+      },
+      {
+        "t": 1.597,
+        "phrase": 1,
+        "count": 3
+      },
+      {
+        "t": 2.13,
+        "phrase": 1,
+        "count": 4
+      },
+      {
+        "t": 2.663,
+        "phrase": 1,
+        "count": 5
+      },
+      {
+        "t": 3.197,
+        "phrase": 1,
+        "count": 6
+      },
+      {
+        "t": 3.73,
+        "phrase": 1,
+        "count": 7
+      },
+      {
+        "t": 4.263,
+        "phrase": 1,
+        "count": 8
+      },
+      {
+        "t": 4.797,
+        "phrase": 2,
+        "count": 1
+      },
+      {
+        "t": 5.33,
+        "phrase": 2,
+        "count": 2
+      },
+      {
+        "t": 5.863,
+        "phrase": 2,
+        "count": 3
+      },
+      {
+        "t": 6.397,
+        "phrase": 2,
+        "count": 4
+      },
+      {
+        "t": 6.93,
+        "phrase": 2,
+        "count": 5
+      },
+      {
+        "t": 7.463,
+        "phrase": 2,
+        "count": 6
+      },
+      {
+        "t": 7.997,
+        "phrase": 2,
+        "count": 7
+      },
+      {
+        "t": 8.53,
+        "phrase": 2,
+        "count": 8
+      },
+      {
+        "t": 9.063,
+        "phrase": 3,
+        "count": 1
+      },
+      {
+        "t": 9.597,
+        "phrase": 3,
+        "count": 2
+      },
+      {
+        "t": 10.13,
+        "phrase": 3,
+        "count": 3
+      },
+      {
+        "t": 10.663,
+        "phrase": 3,
+        "count": 4
+      },
+      {
+        "t": 11.197,
+        "phrase": 3,
+        "count": 5
+      },
+      {
+        "t": 11.73,
+        "phrase": 3,
+        "count": 6
+      },
+      {
+        "t": 12.263,
+        "phrase": 3,
+        "count": 7
+      },
+      {
+        "t": 12.797,
+        "phrase": 3,
+        "count": 8
+      },
+      {
+        "t": 13.33,
+        "phrase": 4,
+        "count": 1
+      },
+      {
+        "t": 13.863,
+        "phrase": 4,
+        "count": 2
+      },
+      {
+        "t": 14.397,
+        "phrase": 4,
+        "count": 3
+      },
+      {
+        "t": 14.93,
+        "phrase": 4,
+        "count": 4
+      },
+      {
+        "t": 15.463,
+        "phrase": 4,
+        "count": 5
+      },
+      {
+        "t": 15.997,
+        "phrase": 4,
+        "count": 6
+      }
+    ]
+  },
+  "segments": [
+    {
+      "id": "A",
+      "title": "The Attitude Intro",
+      "start_s": 0.53,
+      "end_s": 4.8,
+      "teach_order": 1,
+      "difficulty": 2,
+      "focus": [
+        "arms",
+        "hands",
+        "hips",
+        "feet"
+      ],
+      "cues": [
+        "Right hand flicks by the right ear on 1-2-3-4",
+        "Left hip and knee pop out with each flick",
+        "Switch hands on 5-6, gather to the chest on 7-8"
+      ]
+    },
+    {
+      "id": "B",
+      "title": "Peek-a-Boo to Lateral Sweep",
+      "start_s": 4.8,
+      "end_s": 6.4,
+      "teach_order": 2,
+      "difficulty": 2,
+      "focus": [
+        "arms",
+        "hands"
+      ],
+      "cues": [
+        "Palms together over the nose on 1",
+        "Forearms fold and sweep across the chest to your left on 3"
+      ]
+    },
+    {
+      "id": "C",
+      "title": "The Hook Groove",
+      "start_s": 6.4,
+      "end_s": 9.07,
+      "teach_order": 3,
+      "difficulty": 4,
+      "focus": [
+        "arms",
+        "hips",
+        "feet"
+      ],
+      "cues": [
+        "Heel-hip bounce on 5-6-7-8",
+        "Wrists roll by the left shoulder"
+      ],
+      "config_overrides": {
+        "scoring_thresholds": {
+          "gate": {
+            "timing_source": "hits"
+          }
+        }
+      }
+    },
+    {
+      "id": "D",
+      "title": "Shimmy, Crown Lotus and Finale",
+      "start_s": 9.07,
+      "end_s": 14.93,
+      "teach_order": 4,
+      "difficulty": 2,
+      "focus": [
+        "arms",
+        "hands",
+        "torso"
+      ],
+      "cues": [
+        "Shoulder shimmy at the collarbone",
+        "Hands trace the face and meet overhead on 8",
+        "Open palms forward, then drop to rest"
+      ]
+    },
+    {
+      "id": "full",
+      "kind": "full_run",
+      "title": "Full Routine",
+      "start_s": 0.53,
+      "end_s": 14.93,
+      "teach_order": 5,
+      "difficulty": 3,
+      "focus": [
+        "arms",
+        "hands",
+        "hips",
+        "feet"
+      ],
+      "cues": [
+        "A, B, C, D without stopping"
+      ]
+    }
+  ],
+  "windows": [
+    {
+      "kind": "clasp",
+      "start_s": 4.8,
+      "end_s": 5.87,
+      "mask": [
+        "hand_shape"
+      ],
+      "tolerance_scale": {
+        "leftWrist": 2.0,
+        "rightWrist": 2.0
+      }
+    },
+    {
+      "kind": "clasp",
+      "start_s": 12.75,
+      "end_s": 13.65,
+      "mask": [
+        "hand_shape"
+      ],
+      "tolerance_scale": {
+        "leftWrist": 2.0,
+        "rightWrist": 2.0
+      }
+    }
+  ],
+  "config_overrides": {
+    "scoring_thresholds": {
+      "shape": {
+        "arm_weight": 0.35
+      },
+      "groove": {
+        "pass_min_score": 0
+      }
+    }
+  },
+  "practice": {
+    "count_in_beats": 4,
+    "adaptive_speed": {
+      "min_rate": 0.6,
+      "start_rate": 0.7,
+      "max_rate": 1.0,
+      "step_up": 0.1,
+      "step_down": 0.05,
+      "promote_after": 2,
+      "demote_after": 2,
+      "unlock_next_at_rate": 0.8
+    }
+  },
+  "files": {
+    "video.mp4": "0000000000000000000000000000000000000000000000000000000000000000",
+    "reference_pose.json": "0000000000000000000000000000000000000000000000000000000000000000",
+    "poster.jpg": "0000000000000000000000000000000000000000000000000000000000000000"
+  }
+}

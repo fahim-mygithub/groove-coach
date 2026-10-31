@@ -3,13 +3,26 @@ import CoreMotion
 import GrooveCore
 import PhotosUI
 import SwiftUI
+import UIKit
 import Vision
 
 @main
 struct GrooveCoachApp: App {
+    @StateObject private var library = GrooveLibrary()
+    @StateObject private var lessonStore = LessonStore.shared
+
     var body: some Scene {
         WindowGroup {
-            CalibrationOnboardingView()
+            TabView {
+                CourseListView()
+                    .tabItem { Label("Courses", systemImage: "play.rectangle.on.rectangle") }
+                PracticeView()
+                    .tabItem { Label("Practice", systemImage: "figure.dance") }
+                CalibrationOnboardingView()
+                    .tabItem { Label("Calibrate", systemImage: "slider.horizontal.3") }
+            }
+            .environmentObject(library)
+            .environmentObject(lessonStore)
         }
     }
 }
@@ -58,12 +71,14 @@ struct CalibrationOnboardingView: View {
     @State private var clipRole: CalibrationClipRole = .cleanPass
     @State private var bpm: Double = 110.0
 
-    @State private var references: [String: GrooveScoringEngine.PoseClip] = [:]
-    @State private var calibrationClips: [GrooveScoringEngine.PoseClip] = []
+    @EnvironmentObject private var library: GrooveLibrary
+    private var references: [String: GrooveScoringEngine.PoseClip] { library.references }
+    private var calibrationClips: [GrooveScoringEngine.PoseClip] { library.calibrationClips }
     @State private var calibrationReport: GrooveScoringEngine.CalibrationReport?
     @State private var exportedBundleURL: URL?
 
     @State private var statusText: String = "Step 1: Import reference clips (`down_bounce`, `house_jack`), then ingest your ~20 calibration clips."
+    private let footTrackingAvailable = FootKeypointProviderFactory.isAvailable
     @State private var measuredFps: Double = 0.0
 
     private let motionManager = CMMotionManager()
@@ -102,6 +117,12 @@ struct CalibrationOnboardingView: View {
                     Text(statusText)
                         .font(.footnote)
                         .foregroundStyle(.secondary)
+                    Label(
+                        footTrackingAvailable ? "Foot tracking: MediaPipe Pose Landmarker" : "Foot tracking: unavailable in this build",
+                        systemImage: footTrackingAvailable ? "shoeprints.fill" : "exclamationmark.triangle"
+                    )
+                    .font(.caption)
+                    .foregroundStyle(footTrackingAvailable ? .green : .orange)
                     if measuredFps > 0 {
                         Text(String(format: "Last Vision 3D + Foot Speed: %.1f fps", measuredFps))
                             .font(.caption.monospacedDigit().bold())
@@ -186,19 +207,6 @@ struct CalibrationOnboardingView: View {
         return [g.x, g.y, g.z]
     }
 
-    private func defaultConfig() -> GrooveScoringEngine.GrooveConfig {
-        GrooveScoringEngine.GrooveConfig(
-            version: "1.0.0",
-            scoring_thresholds: .init(
-                timing: .init(perfect_max_ms: 60.0, good_max_ms: 120.0, search_window_beats: 0.45),
-                shape: .init(max_angle_error_deg: 45.0, max_single_joint_error_deg: 24.0, foot_pitch_weight: 0.30, pass_min_score: 70.0),
-                groove: .init(min_knee_flex_ratio: 0.65, ideal_spine_lag_ms_min: 30.0, ideal_spine_lag_ms_max: 110.0, max_jerk_ratio: 2.5, pass_min_score: 65.0),
-                coverage: .init(min_joint_confidence: 0.50, min_valid_frame_ratio: 0.80),
-                gate: .init(min_good_or_better_beat_ratio: 0.80, speed_ladder_pct: [50, 75, 90, 100])
-            )
-        )
-    }
-
     @MainActor
     private func ingestPickedVideo(_ item: PhotosPickerItem) async {
         statusText = "Loading 20s video clip..."
@@ -210,7 +218,7 @@ struct CalibrationOnboardingView: View {
             let tempVideoURL = FileManager.default.temporaryDirectory.appendingPathComponent("ingest_clip.mov")
             try movieData.write(to: tempVideoURL, options: .atomic)
 
-            statusText = "Extracting Vision 3D + Core ML foot poses..."
+            statusText = "Extracting Vision 3D + MediaPipe foot + hand poses..."
             let startWall = CFAbsoluteTimeGetCurrent()
             let frames = try await VideoPoseExtractor.extractFrames(from: tempVideoURL)
             let elapsed = max(0.001, CFAbsoluteTimeGetCurrent() - startWall)
@@ -235,10 +243,10 @@ struct CalibrationOnboardingView: View {
             )
 
             if clipRole == .reference {
-                references[moveTag] = clip
+                library.references[moveTag] = clip
                 statusText = "Saved reference clip for `\(moveTag)` (\(frames.count) frames @ \(String(format: "%.1f", measuredFps)) fps)."
             } else {
-                calibrationClips.append(clip)
+                library.calibrationClips.append(clip)
                 statusText = "Ingested `\(clipId)` (\(calibrationClips.count)/20 calibration clips)."
                 clipId = String(format: "clip_%02d_%@", calibrationClips.count + 1, moveTag)
             }
@@ -249,7 +257,7 @@ struct CalibrationOnboardingView: View {
 
     @MainActor
     private func runOnDeviceCalibration() {
-        let cfg = defaultConfig()
+        let cfg = library.config
         let report = GrooveScoringEngine.calibrateUserBaseline(
             clips: calibrationClips,
             references: references,
@@ -281,6 +289,10 @@ struct CalibrationOnboardingView: View {
 
 enum VideoPoseExtractor {
     static let visionJointMap: [(String, VNHumanBodyPose3DObservation.JointName)] = [
+        ("leftElbow", .leftElbow),
+        ("leftWrist", .leftWrist),
+        ("rightElbow", .rightElbow),
+        ("rightWrist", .rightWrist),
         ("root", .root),
         ("spine", .spine),
         ("centerShoulder", .centerShoulder),
@@ -294,11 +306,27 @@ enum VideoPoseExtractor {
         ("rightShoulder", .rightShoulder)
     ]
 
-    static func extractFrames(from videoURL: URL) async throws -> [GrooveScoringEngine.RawPoseFrame] {
+    /// Display orientation of a video track (portrait iPhone recordings are stored landscape plus a 90 deg transform).
+    static func orientation(for transform: CGAffineTransform) -> (vision: CGImagePropertyOrientation, ui: UIImage.Orientation) {
+        let degrees = Int((atan2(transform.b, transform.a) * 180.0 / .pi).rounded())
+        switch degrees {
+        case 90: return (.right, .right)
+        case -90: return (.left, .left)
+        case 180, -180: return (.down, .down)
+        default: return (.up, .up)
+        }
+    }
+
+    /// Unified Vision 3D body + MediaPipe feet + Vision hand landmarks per frame.
+    /// With `rebaseToFirstSample`, `t` is measured from the first decoded frame (used to re-time practice takes).
+    static func extractFrames(from videoURL: URL, rebaseToFirstSample: Bool = false) async throws -> [GrooveScoringEngine.RawPoseFrame] {
         let asset = AVURLAsset(url: videoURL)
         guard let track = try await asset.loadTracks(withMediaType: .video).first else {
             return []
         }
+        let transform = try await track.load(.preferredTransform)
+        let (visionOrientation, imageOrientation) = orientation(for: transform)
+        let rotated = visionOrientation == .left || visionOrientation == .right
 
         let reader = try AVAssetReader(asset: asset)
         let outputSettings: [String: Any] = [
@@ -308,13 +336,17 @@ enum VideoPoseExtractor {
         reader.add(trackOutput)
         reader.startReading()
 
+        let footProvider = FootKeypointProviderFactory.makeVideoProvider()
         var extracted: [GrooveScoringEngine.RawPoseFrame] = []
+        var firstSampleTime: Double?
         while let sampleBuffer = trackOutput.copyNextSampleBuffer() {
-            let timestamp = CMSampleBufferGetPresentationTimeStamp(sampleBuffer).seconds
+            let rawTimestamp = CMSampleBufferGetPresentationTimeStamp(sampleBuffer).seconds
+            if firstSampleTime == nil { firstSampleTime = rawTimestamp }
+            let timestamp = rebaseToFirstSample ? rawTimestamp - (firstSampleTime ?? rawTimestamp) : rawTimestamp
             let request3D = VNDetectHumanBodyPose3DRequest()
-            let request2D = VNDetectHumanBodyPoseRequest()
-            let handler = VNImageRequestHandler(cmSampleBuffer: sampleBuffer, orientation: .up)
-            try handler.perform([request3D, request2D])
+            let handRequest = HandPoseExtractor.makeRequest()
+            let handler = VNImageRequestHandler(cmSampleBuffer: sampleBuffer, orientation: visionOrientation)
+            try handler.perform([request3D, handRequest])
 
             guard let obs3D = request3D.results?.first else { continue }
             var jointsDict: [String: [Double]] = [:]
@@ -322,16 +354,23 @@ enum VideoPoseExtractor {
 
             for (name, jointKey) in visionJointMap {
                 if let point = try? obs3D.recognizedPoint(jointKey) {
-                    let pos = point.localPosition.columns.3
+                    // `position` is root-relative model space (meters); `localPosition` is parent-joint-relative.
+                    let pos = point.position.columns.3
                     jointsDict[name] = [Double(pos.x), Double(pos.y), Double(pos.z)]
                     confDict[name] = 0.95
                 }
             }
 
             // Foot keypoints: NEVER fake heel/toe positions from ankle offsets.
-            // Only populate if a real FootKeypointProvider (e.g. MediaPipeTasksVision PoseLandmarker) returns them;
+            // Only populate if a real FootKeypointProvider (MediaPipeTasksVision PoseLandmarker) returns them;
             // otherwise leave foot joints absent from `jointsDict` with explicit 0.0 confidence so scoring reports "unavailable".
-            if let realFeet = FootLandmarkerBridge.extractFootKeypoints(from: sampleBuffer, timestampSeconds: timestamp) {
+            let visionAnkles = jointsDict.filter { $0.key == "leftAnkle" || $0.key == "rightAnkle" }
+            if let realFeet = footProvider?.footKeypoints(
+                from: sampleBuffer,
+                orientation: imageOrientation,
+                timestampSeconds: rawTimestamp,
+                visionAnkles: visionAnkles
+            ) {
                 for (footName, coords) in realFeet.joints {
                     jointsDict[footName] = coords
                 }
@@ -345,37 +384,25 @@ enum VideoPoseExtractor {
                 confDict["rightFootIndex"] = 0.0
             }
 
+            // Hands in the 21-point MediaPipe order; nil when not seen, so hand styling is skipped (never zeroed).
+            var imageAspect = 9.0 / 16.0
+            if let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) {
+                let w = Double(CVPixelBufferGetWidth(pixelBuffer))
+                let h = Double(CVPixelBufferGetHeight(pixelBuffer))
+                imageAspect = rotated ? h / max(1.0, w) : w / max(1.0, h)
+            }
+            let hands = HandPoseExtractor.handsPayload(HandPoseExtractor.hands(from: handRequest, imageAspect: imageAspect))
+
             extracted.append(
                 GrooveScoringEngine.RawPoseFrame(
                     t: timestamp,
                     joints: jointsDict,
-                    confidences: confDict
+                    confidences: confDict,
+                    hands: hands
                 )
             )
         }
         return extracted
-    }
-}
-
-/// Bridge for real foot keypoint extraction (`leftHeel`, `leftFootIndex`, `rightHeel`, `rightFootIndex`).
-/// Uses official `MediaPipeTasksVision` (`PoseLandmarker` indices 29, 30, 31, 32) when linked;
-/// returns `nil` (zero confidence, never fake ankle offsets) when running body-only Build #1.
-enum FootLandmarkerBridge {
-    struct FootResult {
-        let joints: [String: [Double]]
-        let confidences: [String: Double]
-    }
-
-    static func extractFootKeypoints(
-        from sampleBuffer: CMSampleBuffer,
-        timestampSeconds: Double
-    ) -> FootResult? {
-        #if canImport(MediaPipeTasksVision)
-        // MediaPipe PoseLandmarker indices: 29 = left_heel, 30 = right_heel, 31 = left_foot_index, 32 = right_foot_index
-        return nil
-        #else
-        return nil
-        #endif
     }
 }
 
