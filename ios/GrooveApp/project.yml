@@ -16,6 +16,10 @@ targets:
       - path: Resources/pose_landmarker_full.task
         optional: true
         buildPhase: resources
+      # MediaPipe Hand Landmarker model; fetched (sha256-pinned) by Resources/fetch_pose_model.sh, not committed.
+      - path: Resources/hand_landmarker.task
+        optional: true
+        buildPhase: resources
       # Scoring thresholds shared with groove_eval + the Swift parity gate (loaded by GrooveLibrary).
       - path: ../../config/groove_config.json
         buildPhase: resources

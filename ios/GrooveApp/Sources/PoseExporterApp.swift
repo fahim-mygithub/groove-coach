@@ -4,7 +4,6 @@ import GrooveCore
 import PhotosUI
 import SwiftUI
 import UIKit
-import Vision
 
 @main
 struct GrooveCoachApp: App {
@@ -61,7 +60,7 @@ enum CalibrationClipRole: String, CaseIterable, Identifiable {
 }
 
 /// In-App Personal Calibration & 20-Clip Pose Ingest Screen (M1a + M0b).
-/// Ingests ~20 short 20-second clips directly on the iPhone, runs unified Vision 3D + Core ML foot
+/// Ingests ~20 short 20-second clips directly on the iPhone, runs MediaPipe
 /// pose extraction, calibrates the user's personal baseline (`LearnerBaseline`), verifies 100%
 /// pass/fail separation, and saves/exports the calibration bundle.
 struct CalibrationOnboardingView: View {
@@ -78,7 +77,7 @@ struct CalibrationOnboardingView: View {
     @State private var exportedBundleURL: URL?
 
     @State private var statusText: String = "Step 1: Import reference clips (`down_bounce`, `house_jack`), then ingest your ~20 calibration clips."
-    private let footTrackingAvailable = FootKeypointProviderFactory.isAvailable
+    private let poseTrackingAvailable = MediaPipePoseProvider.isAvailable
     @State private var measuredFps: Double = 0.0
 
     private let motionManager = CMMotionManager()
@@ -118,13 +117,13 @@ struct CalibrationOnboardingView: View {
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                     Label(
-                        footTrackingAvailable ? "Foot tracking: MediaPipe Pose Landmarker" : "Foot tracking: unavailable in this build",
-                        systemImage: footTrackingAvailable ? "shoeprints.fill" : "exclamationmark.triangle"
+                        poseTrackingAvailable ? "MediaPipe Pose Landmarker: active" : "MediaPipe: unavailable in this build",
+                        systemImage: poseTrackingAvailable ? "figure.dance" : "exclamationmark.triangle"
                     )
                     .font(.caption)
-                    .foregroundStyle(footTrackingAvailable ? .green : .orange)
+                    .foregroundStyle(poseTrackingAvailable ? .green : .orange)
                     if measuredFps > 0 {
-                        Text(String(format: "Last Vision 3D + Foot Speed: %.1f fps", measuredFps))
+                        Text(String(format: "Last MediaPipe Speed: %.1f fps", measuredFps))
                             .font(.caption.monospacedDigit().bold())
                     }
                 }
@@ -218,7 +217,7 @@ struct CalibrationOnboardingView: View {
             let tempVideoURL = FileManager.default.temporaryDirectory.appendingPathComponent("ingest_clip.mov")
             try movieData.write(to: tempVideoURL, options: .atomic)
 
-            statusText = "Extracting Vision 3D + MediaPipe foot + hand poses..."
+            statusText = "Extracting MediaPipe 3D pose + hands..."
             let startWall = CFAbsoluteTimeGetCurrent()
             let frames = try await VideoPoseExtractor.extractFrames(from: tempVideoURL)
             let elapsed = max(0.001, CFAbsoluteTimeGetCurrent() - startWall)
@@ -287,122 +286,18 @@ struct CalibrationOnboardingView: View {
     }
 }
 
-enum VideoPoseExtractor {
-    static let visionJointMap: [(String, VNHumanBodyPose3DObservation.JointName)] = [
-        ("leftElbow", .leftElbow),
-        ("leftWrist", .leftWrist),
-        ("rightElbow", .rightElbow),
-        ("rightWrist", .rightWrist),
-        ("root", .root),
-        ("spine", .spine),
-        ("centerShoulder", .centerShoulder),
-        ("leftHip", .leftHip),
-        ("leftKnee", .leftKnee),
-        ("leftAnkle", .leftAnkle),
-        ("rightHip", .rightHip),
-        ("rightKnee", .rightKnee),
-        ("rightAnkle", .rightAnkle),
-        ("leftShoulder", .leftShoulder),
-        ("rightShoulder", .rightShoulder)
-    ]
-
-    /// Display orientation of a video track (portrait iPhone recordings are stored landscape plus a 90 deg transform).
-    static func orientation(for transform: CGAffineTransform) -> (vision: CGImagePropertyOrientation, ui: UIImage.Orientation) {
-        let degrees = Int((atan2(transform.b, transform.a) * 180.0 / .pi).rounded())
-        switch degrees {
-        case 90: return (.right, .right)
-        case -90: return (.left, .left)
-        case 180, -180: return (.down, .down)
-        default: return (.up, .up)
-        }
+public enum VideoPoseExtractor {
+    /// MediaPipe Pose + Hand landmark extraction for recorded videos (spec §3.1, §3.3).
+    public static func extractFrames(
+        from videoURL: URL,
+        rebaseToFirstSample: Bool = false
+    ) async throws -> [GrooveScoringEngine.RawPoseFrame] {
+        try await MediaPipePoseProvider.shared.extract(videoURL: videoURL, rebaseToFirstSample: rebaseToFirstSample)
     }
 
-    /// Unified Vision 3D body + MediaPipe feet + Vision hand landmarks per frame.
-    /// With `rebaseToFirstSample`, `t` is measured from the first decoded frame (used to re-time practice takes).
-    static func extractFrames(from videoURL: URL, rebaseToFirstSample: Bool = false) async throws -> [GrooveScoringEngine.RawPoseFrame] {
-        let asset = AVURLAsset(url: videoURL)
-        guard let track = try await asset.loadTracks(withMediaType: .video).first else {
-            return []
-        }
-        let transform = try await track.load(.preferredTransform)
-        let (visionOrientation, imageOrientation) = orientation(for: transform)
-        let rotated = visionOrientation == .left || visionOrientation == .right
-
-        let reader = try AVAssetReader(asset: asset)
-        let outputSettings: [String: Any] = [
-            kCVPixelBufferPixelFormatTypeKey as String: Int(kCVPixelFormatType_32BGRA)
-        ]
-        let trackOutput = AVAssetReaderTrackOutput(track: track, outputSettings: outputSettings)
-        reader.add(trackOutput)
-        reader.startReading()
-
-        let footProvider = FootKeypointProviderFactory.makeVideoProvider()
-        var extracted: [GrooveScoringEngine.RawPoseFrame] = []
-        var firstSampleTime: Double?
-        while let sampleBuffer = trackOutput.copyNextSampleBuffer() {
-            let rawTimestamp = CMSampleBufferGetPresentationTimeStamp(sampleBuffer).seconds
-            if firstSampleTime == nil { firstSampleTime = rawTimestamp }
-            let timestamp = rebaseToFirstSample ? rawTimestamp - (firstSampleTime ?? rawTimestamp) : rawTimestamp
-            let request3D = VNDetectHumanBodyPose3DRequest()
-            let handRequest = HandPoseExtractor.makeRequest()
-            let handler = VNImageRequestHandler(cmSampleBuffer: sampleBuffer, orientation: visionOrientation)
-            try handler.perform([request3D, handRequest])
-
-            guard let obs3D = request3D.results?.first else { continue }
-            var jointsDict: [String: [Double]] = [:]
-            var confDict: [String: Double] = [:]
-
-            for (name, jointKey) in visionJointMap {
-                if let point = try? obs3D.recognizedPoint(jointKey) {
-                    // `position` is root-relative model space (meters); `localPosition` is parent-joint-relative.
-                    let pos = point.position.columns.3
-                    jointsDict[name] = [Double(pos.x), Double(pos.y), Double(pos.z)]
-                    confDict[name] = 0.95
-                }
-            }
-
-            // Foot keypoints: NEVER fake heel/toe positions from ankle offsets.
-            // Only populate if a real FootKeypointProvider (MediaPipeTasksVision PoseLandmarker) returns them;
-            // otherwise leave foot joints absent from `jointsDict` with explicit 0.0 confidence so scoring reports "unavailable".
-            let visionAnkles = jointsDict.filter { $0.key == "leftAnkle" || $0.key == "rightAnkle" }
-            if let realFeet = footProvider?.footKeypoints(
-                from: sampleBuffer,
-                orientation: imageOrientation,
-                timestampSeconds: rawTimestamp,
-                visionAnkles: visionAnkles
-            ) {
-                for (footName, coords) in realFeet.joints {
-                    jointsDict[footName] = coords
-                }
-                for (footName, conf) in realFeet.confidences {
-                    confDict[footName] = conf
-                }
-            } else {
-                confDict["leftHeel"] = 0.0
-                confDict["leftFootIndex"] = 0.0
-                confDict["rightHeel"] = 0.0
-                confDict["rightFootIndex"] = 0.0
-            }
-
-            // Hands in the 21-point MediaPipe order; nil when not seen, so hand styling is skipped (never zeroed).
-            var imageAspect = 9.0 / 16.0
-            if let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) {
-                let w = Double(CVPixelBufferGetWidth(pixelBuffer))
-                let h = Double(CVPixelBufferGetHeight(pixelBuffer))
-                imageAspect = rotated ? h / max(1.0, w) : w / max(1.0, h)
-            }
-            let hands = HandPoseExtractor.handsPayload(HandPoseExtractor.hands(from: handRequest, imageAspect: imageAspect))
-
-            extracted.append(
-                GrooveScoringEngine.RawPoseFrame(
-                    t: timestamp,
-                    joints: jointsDict,
-                    confidences: confDict,
-                    hands: hands
-                )
-            )
-        }
-        return extracted
+    /// Display orientation helper forwarding to MediaPipePoseProvider.
+    public static func orientation(for transform: CGAffineTransform) -> UIImage.Orientation {
+        MediaPipePoseProvider.orientation(for: transform)
     }
 }
 
@@ -423,4 +318,3 @@ public enum HostTimeClock {
         return AVAudioTime.seconds(forHostTime: audioTime.hostTime)
     }
 }
-

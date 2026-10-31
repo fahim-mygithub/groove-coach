@@ -1,7 +1,6 @@
 import AVFoundation
 import CoreGraphics
 import GrooveCore
-import Vision
 
 /// Live 2D joints for the camera overlay: normalised 0...1 with y down, mirrored like the selfie preview.
 struct LiveSkeleton {
@@ -11,10 +10,9 @@ struct LiveSkeleton {
 }
 
 /// Front-camera capture for practice takes:
-/// - records takes to a movie file (scored afterwards with the same Vision 3D + MediaPipe + hand-pose extractor as
-///   the Calibrate tab);
-/// - runs lightweight live Vision (2D body + `VNDetectHumanHandPoseRequest`) on spare frames to drive the skeleton
-///   overlay, live hand-shape labels and the hands-free `GestureRecognizer`.
+/// - records takes to a movie file (scored afterwards with MediaPipe VIDEO mode via PoseProvider);
+/// - runs lightweight live MediaPipe PoseLandmarker (LIVE_STREAM mode) to drive the skeleton overlay
+///   and hands-free `GestureRecognizer`.
 /// Thread confinement: capture + recording state lives on `videoQueue`, gesture state on `analysisQueue`, published
 /// properties are only written on the main queue.
 final class PracticeCamera: NSObject, ObservableObject, AVCaptureVideoDataOutputSampleBufferDelegate, @unchecked Sendable {
@@ -28,18 +26,9 @@ final class PracticeCamera: NSObject, ObservableObject, AVCaptureVideoDataOutput
     /// Delivered on the main queue when a gesture completes.
     var onGesture: ((GestureCommand) -> Void)?
 
-    static let bodyJoints: [(String, VNHumanBodyPoseObservation.JointName)] = [
-        ("nose", .nose), ("neck", .neck), ("root", .root),
-        ("leftShoulder", .leftShoulder), ("rightShoulder", .rightShoulder),
-        ("leftElbow", .leftElbow), ("rightElbow", .rightElbow),
-        ("leftWrist", .leftWrist), ("rightWrist", .rightWrist),
-        ("leftHip", .leftHip), ("rightHip", .rightHip),
-        ("leftKnee", .leftKnee), ("rightKnee", .rightKnee),
-        ("leftAnkle", .leftAnkle), ("rightAnkle", .rightAnkle)
-    ]
-
     private static let minLiveJointConfidence: Float = 0.3
 
+    private let provider: PoseProvider
     private let output = AVCaptureVideoDataOutput()
     private let videoQueue = DispatchQueue(label: "groove.practice.video")
     private let analysisQueue = DispatchQueue(label: "groove.practice.analysis")
@@ -55,6 +44,11 @@ final class PracticeCamera: NSObject, ObservableObject, AVCaptureVideoDataOutput
 
     /// Selfie preview is mirrored, so gesture directions and the overlay are mirrored to match what the dancer sees.
     private let mirrorForDisplay = true
+
+    init(provider: PoseProvider = MediaPipePoseProvider.shared) {
+        self.provider = provider
+        super.init()
+    }
 
     func start() {
         videoQueue.async { [weak self] in
@@ -124,7 +118,7 @@ final class PracticeCamera: NSObject, ObservableObject, AVCaptureVideoDataOutput
         }
         session.addOutput(output)
         if let connection = output.connection(with: .video), connection.isVideoRotationAngleSupported(90) {
-            // Portrait, upright buffers: Vision runs with `.up` and recorded takes need no transform.
+            // Portrait, upright buffers: live MediaPipe runs with `.up` and recorded takes need no transform.
             connection.videoRotationAngle = 90
         }
         session.commitConfiguration()
@@ -158,37 +152,20 @@ final class PracticeCamera: NSObject, ObservableObject, AVCaptureVideoDataOutput
     private func analyze(_ sampleBuffer: CMSampleBuffer, time: Double) {
         guard let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
         let aspect = Double(CVPixelBufferGetWidth(pixelBuffer)) / Double(max(1, CVPixelBufferGetHeight(pixelBuffer)))
-        let bodyRequest = VNDetectHumanBodyPoseRequest()
-        let handRequest = HandPoseExtractor.makeRequest()
-        let handler = VNImageRequestHandler(cvPixelBuffer: pixelBuffer, orientation: .up)
-        do {
-            try handler.perform([bodyRequest, handRequest])
-        } catch {
-            return
-        }
 
-        var joints: [String: CGPoint] = [:]
-        var bodyPoints: [String: VNRecognizedPoint] = [:]
-        if let body = bodyRequest.results?.first, let recognized = try? body.recognizedPoints(.all) {
-            for (name, key) in Self.bodyJoints {
-                guard let p = recognized[key], p.confidence >= Self.minLiveJointConfidence else { continue }
-                bodyPoints[name] = p
-                joints[name] = CGPoint(x: displayX(p.location.x), y: 1.0 - p.location.y)
-            }
-        }
-        let hands = HandPoseExtractor.hands(from: handRequest, imageAspect: aspect)
+        guard let frame = provider.live(sampleBuffer, hostTime: time) else { return }
+        let normLandmarks = (provider as? MediaPipePoseProvider)?.latestNormalizedLandmarks ?? [:]
 
-        // Gestures: body-pose wrists (stable at dance distance), falling back to hand-pose wrists.
+        // Gestures: body-pose wrists (stable at dance distance) from MediaPipe landmarks
         func wrist(_ side: String) -> GesturePoint? {
-            if let p = bodyPoints[side + "Wrist"] {
-                return GesturePoint(x: Double(displayX(p.location.x)), y: Double(p.location.y), confidence: Double(p.confidence))
+            guard let p = normLandmarks[side + "Wrist"],
+                  let conf = frame.confidences?[side + "Wrist"],
+                  conf >= Double(Self.minLiveJointConfidence) else {
+                return nil
             }
-            if let hand = hands.first(where: { $0.side == side }) {
-                return GesturePoint(x: Double(displayX(hand.wrist.x)), y: Double(hand.wrist.y), confidence: hand.wristConfidence)
-            }
-            return nil
+            return GesturePoint(x: Double(displayX(p.x)), y: Double(p.y), confidence: conf)
         }
-        let headY = (bodyPoints["nose"] ?? bodyPoints["neck"]).map { Double($0.location.y) }
+        let headY = normLandmarks["nose"].map { Double($0.y) }
         let sample = GestureSample(time: time, leftWrist: wrist("left"), rightWrist: wrist("right"), headY: headY)
         if let command = recognizer.process(sample) {
             DispatchQueue.main.async { self.onGesture?(command) }
@@ -196,14 +173,17 @@ final class PracticeCamera: NSObject, ObservableObject, AVCaptureVideoDataOutput
 
         guard time - lastPublish >= 0.066 else { return }
         lastPublish = time
-        var shapes: [String: String] = [:]
-        for hand in hands {
-            shapes[hand.side] = HandPoseExtractor.shapeLabel(hand).rawValue
+
+        var joints: [String: CGPoint] = [:]
+        for (name, p) in normLandmarks {
+            if let conf = frame.confidences?[name], conf >= Double(Self.minLiveJointConfidence) {
+                joints[name] = CGPoint(x: displayX(p.x), y: p.y)
+            }
         }
         let skeleton = LiveSkeleton(joints: joints, imageAspect: aspect)
         DispatchQueue.main.async {
             self.skeleton = skeleton
-            self.handShapes = shapes
+            self.handShapes = [:]
         }
     }
 

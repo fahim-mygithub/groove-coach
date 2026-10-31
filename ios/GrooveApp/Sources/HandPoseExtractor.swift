@@ -1,85 +1,93 @@
-import CoreGraphics
+import CoreMedia
+import Foundation
 import GrooveCore
-import Vision
+import UIKit
+#if canImport(MediaPipeTasksVision)
+import MediaPipeTasksVision
+#endif
 
-/// Apple Vision hand landmarks (`VNDetectHumanHandPoseRequest`, no extra dependency) mapped to the 21-point
-/// MediaPipe Hands order used by `HandStyling` and `RawPoseFrame.hands`.
-enum HandPoseExtractor {
-    /// Vision joint names in MediaPipe order: wrist, thumb CMC/MP/IP/tip, then MCP/PIP/DIP/tip for index, middle,
-    /// ring and little (MediaPipe "pinky").
-    static let jointOrder: [VNHumanHandPoseObservation.JointName] = [
-        .wrist,
-        .thumbCMC, .thumbMP, .thumbIP, .thumbTip,
-        .indexMCP, .indexPIP, .indexDIP, .indexTip,
-        .middleMCP, .middlePIP, .middleDIP, .middleTip,
-        .ringMCP, .ringPIP, .ringDIP, .ringTip,
-        .littleMCP, .littlePIP, .littleDIP, .littleTip
-    ]
+/// MediaPipe HandLandmarker wrapper for post-take hand extraction (spec §3.3).
+///
+/// Uses pinned `hand_landmarker.task` model (sha256 `fbc2a30080c3c557093b5ddfc334698132eb341044ccee322ccf8bcf3607cde1`),
+/// the exact same model as authoring pipeline. In the post-take pass, hands are detected
+/// per video frame and attached to the nearest pose wrist via `CanonicalSkeleton.toCanonical`.
+public final class HandPoseExtractor: @unchecked Sendable {
+    public static let modelResourceName = "hand_landmarker"
+    public static let modelResourceExtension = "task"
+    public static let modelSha256 = "fbc2a30080c3c557093b5ddfc334698132eb341044ccee322ccf8bcf3607cde1"
 
-    /// A hand is only used when every one of its 21 joints clears this confidence (otherwise it is "not seen").
-    static let minJointConfidence: Float = 0.3
+    #if canImport(MediaPipeTasksVision)
+    private let landmarker: HandLandmarker?
+    #endif
+    private var lastTimestampMs: Int = -1
 
-    struct Hand {
-        /// "left" / "right" (the dancer's hand, from Vision chirality).
-        let side: String
-        /// 21 points [x * imageAspect, y, 0] in Vision's normalised image space (y up), so both axes share a unit.
-        let points: [[Double]]
-        /// Wrist in normalised image coordinates (0...1, y up).
-        let wrist: CGPoint
-        let wristConfidence: Double
-        let meanConfidence: Double
-    }
-
-    static func makeRequest() -> VNDetectHumanHandPoseRequest {
-        let request = VNDetectHumanHandPoseRequest()
-        request.maximumHandCount = 2
-        return request
-    }
-
-    /// Hands found by an already performed request. `imageAspect` is width / height of the (oriented) image.
-    static func hands(from request: VNDetectHumanHandPoseRequest, imageAspect: Double) -> [Hand] {
-        var out: [Hand] = []
-        for observation in request.results ?? [] {
-            guard let recognized = try? observation.recognizedPoints(.all),
-                  let wrist = recognized[.wrist] else { continue }
-            var points: [[Double]] = []
-            var confidenceSum = 0.0
-            for name in jointOrder {
-                guard let p = recognized[name], p.confidence >= minJointConfidence else { break }
-                points.append([Double(p.location.x) * imageAspect, Double(p.location.y), 0.0])
-                confidenceSum += Double(p.confidence)
-            }
-            guard points.count == HandStyling.landmarkCount else { continue }
-            let side: String
-            switch observation.chirality {
-            case .left: side = "left"
-            case .right: side = "right"
-            default: side = wrist.location.x < 0.5 ? "right" : "left"
-            }
-            guard !out.contains(where: { $0.side == side }) else { continue }
-            out.append(Hand(
-                side: side,
-                points: points,
-                wrist: wrist.location,
-                wristConfidence: Double(wrist.confidence),
-                meanConfidence: confidenceSum / Double(points.count)
-            ))
+    public init(modelPath: String? = nil) {
+        #if canImport(MediaPipeTasksVision)
+        let resolvedPath = modelPath ?? Bundle.main.path(forResource: Self.modelResourceName, ofType: Self.modelResourceExtension)
+        if let path = resolvedPath {
+            let options = HandLandmarkerOptions()
+            options.baseOptions.modelAssetPath = path
+            options.runningMode = .video
+            options.numHands = 2
+            options.minHandDetectionConfidence = 0.5
+            options.minHandPresenceConfidence = 0.5
+            options.minTrackingConfidence = 0.5
+            self.landmarker = try? HandLandmarker(options: options)
+        } else {
+            self.landmarker = nil
         }
-        return out
+        #endif
     }
 
-    /// `RawPoseFrame.hands` payload, or nil when no usable hand was seen (hand styling is then skipped, not zeroed).
-    static func handsPayload(_ hands: [Hand]) -> [String: [[Double]]]? {
-        guard !hands.isEmpty else { return nil }
-        var payload: [String: [[Double]]] = [:]
-        for hand in hands { payload[hand.side] = hand.points }
-        return payload
+    public var isAvailable: Bool {
+        #if canImport(MediaPipeTasksVision)
+        return landmarker != nil
+        #else
+        return false
+        #endif
     }
 
-    /// Live hand-shape label ("open", "fist", ...) for one hand.
-    static func shapeLabel(_ hand: Hand) -> HandStyling.Shape {
-        let vecs = hand.points.map { GrooveScoringEngine.Vec3(array: $0) }
-        guard let features = HandStyling.extractFeatures(points: vecs, isLeft: hand.side == "left") else { return .unknown }
+    /// Detect hands in a video frame; returns hands mapped into `CanonicalSkeleton.Hand` shape.
+    public func detectHands(
+        from sampleBuffer: CMSampleBuffer,
+        orientation: UIImage.Orientation,
+        timestampMs: Int
+    ) -> [CanonicalSkeleton.Hand] {
+        #if canImport(MediaPipeTasksVision)
+        guard let landmarker = landmarker else { return [] }
+        guard timestampMs > lastTimestampMs else { return [] }
+        lastTimestampMs = timestampMs
+
+        guard let image = try? MPImage(sampleBuffer: sampleBuffer, orientation: orientation),
+              let result = try? landmarker.detect(videoFrame: image, timestampInMilliseconds: timestampMs) else {
+            return []
+        }
+
+        var hands: [CanonicalSkeleton.Hand] = []
+        let worldHands = result.worldLandmarks
+        let imageHands = result.landmarks
+        let count = min(worldHands.count, imageHands.count)
+        for hIdx in 0..<count {
+            let wList = worldHands[hIdx]
+            let iList = imageHands[hIdx]
+            guard wList.count == CanonicalSkeleton.handLandmarkCount,
+                  iList.count == CanonicalSkeleton.handLandmarkCount else {
+                continue
+            }
+            let wPts = wList.map { [Double($0.x), Double($0.y), Double($0.z)] }
+            let iPts = iList.map { [Double($0.x), Double($0.y), Double($0.z)] }
+            hands.append(CanonicalSkeleton.Hand(worldLandmarks: wPts, imageLandmarks: iPts))
+        }
+        return hands
+        #else
+        return []
+        #endif
+    }
+
+    /// Classify hand shape from 21 canonical/hand-space 3D landmarks via `HandStyling`.
+    public static func shapeLabel(points: [[Double]], isLeft: Bool) -> HandStyling.Shape {
+        let vecs = points.map { GrooveScoringEngine.Vec3(array: $0) }
+        guard let features = HandStyling.extractFeatures(points: vecs, isLeft: isLeft) else { return .unknown }
         return HandStyling.classify(features).label
     }
 }
