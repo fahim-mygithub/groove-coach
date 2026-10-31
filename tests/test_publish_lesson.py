@@ -29,10 +29,15 @@ if str(ROOT) not in sys.path:
 from groove_eval.lesson_package import LessonPackageError
 from scripts.publish_lesson import (
     check_version_exists,
+    cleanup_uploaded_objects,
     compute_file_sha256,
+    delete_storage_object,
+    download_storage_object,
     main,
     publish_package,
+    upload_storage_object,
     verify_package_files,
+    verify_uploaded_object,
 )
 
 EXAMPLE_MANIFEST = ROOT / "fixtures" / "lessons" / "example_manifest.json"
@@ -209,7 +214,16 @@ class TestPublishLesson(unittest.TestCase):
         )
         # 2. Storage uploads return 200
         opener.register("POST", "/storage/v1/object/lesson-packages", 200, b'{"Key": "uploaded"}')
-        # 3. DB insert returns created row
+
+        # 3. Storage downloads for post-upload verification return the exact bytes
+        manifest_bytes = self.manifest_path.read_bytes()
+        prefix = "bollywood-basics/img4941-routine/v1/"
+        opener.register("GET", f"/storage/v1/object/lesson-packages/{prefix}manifest.json", 200, manifest_bytes)
+        opener.register("GET", f"/storage/v1/object/lesson-packages/{prefix}video.mp4", 200, self.video_content)
+        opener.register("GET", f"/storage/v1/object/lesson-packages/{prefix}reference_pose.json", 200, self.ref_content)
+        opener.register("GET", f"/storage/v1/object/lesson-packages/{prefix}poster.jpg", 200, self.poster_content)
+
+        # 4. DB insert returns created row
         inserted_row = {
             "id": "new-version-uuid",
             "lesson_id": self.manifest_data["lesson_id"],
@@ -239,20 +253,27 @@ class TestPublishLesson(unittest.TestCase):
         self.assertIn("/rest/v1/lesson_versions", req_urls[0])
 
         # Storage upload requests for manifest, video, reference_pose, poster
-        storage_uploads = [r for r in opener.requests if "/storage/v1/object" in r["url"]]
+        storage_uploads = [r for r in opener.requests if "/storage/v1/object" in r["url"] and r["method"] == "POST"]
         self.assertEqual(len(storage_uploads), 4)
 
-        expected_prefix = "bollywood-basics/img4941-routine/v1/"
         uploaded_paths = [r["url"].split("/storage/v1/object/lesson-packages/")[-1] for r in storage_uploads]
-        self.assertIn(f"{expected_prefix}manifest.json", uploaded_paths)
-        self.assertIn(f"{expected_prefix}video.mp4", uploaded_paths)
-        self.assertIn(f"{expected_prefix}reference_pose.json", uploaded_paths)
-        self.assertIn(f"{expected_prefix}poster.jpg", uploaded_paths)
+        self.assertIn(f"{prefix}manifest.json", uploaded_paths)
+        self.assertIn(f"{prefix}video.mp4", uploaded_paths)
+        self.assertIn(f"{prefix}reference_pose.json", uploaded_paths)
+        self.assertIn(f"{prefix}poster.jpg", uploaded_paths)
 
-        # Check headers on storage uploads
+        # Check headers on storage uploads: x-upsert must be true
         for r in storage_uploads:
             self.assertEqual(r["headers"].get("Apikey"), "fake-service-key")
             self.assertEqual(r["headers"].get("Authorization"), "Bearer fake-service-key")
+            self.assertEqual(r["headers"].get("X-upsert"), "true")
+
+        # Check that post-upload verification GET requests were made
+        storage_verifications = [
+            r for r in opener.requests
+            if "/storage/v1/object/lesson-packages" in r["url"] and r["method"] == "GET"
+        ]
+        self.assertEqual(len(storage_verifications), 4)
 
         # Final request was POST inserting lesson_versions row
         db_insert = opener.requests[-1]
@@ -261,9 +282,75 @@ class TestPublishLesson(unittest.TestCase):
         insert_payload = json.loads(db_insert["data"].decode("utf-8"))
         self.assertEqual(insert_payload["lesson_id"], self.manifest_data["lesson_id"])
         self.assertEqual(insert_payload["package_version"], 1)
-        self.assertEqual(insert_payload["storage_prefix"], expected_prefix)
+        self.assertEqual(insert_payload["storage_prefix"], prefix)
         self.assertEqual(insert_payload["status"], "published")
         self.assertEqual(insert_payload["pose_model_sha256"], self.manifest_data["extractor"]["pose_model_sha256"])
+
+    def test_post_upload_verification_failure_triggers_cleanup(self):
+        opener = FakeOpener()
+        opener.register("GET", "/rest/v1/lesson_versions", 200, json.dumps([]).encode("utf-8"))
+        opener.register("POST", "/storage/v1/object/lesson-packages", 200, b'{"Key": "uploaded"}')
+
+        # Simulate corrupt download during post-upload check
+        prefix = "bollywood-basics/img4941-routine/v1/"
+        manifest_bytes = self.manifest_path.read_bytes()
+        opener.register("GET", f"/storage/v1/object/lesson-packages/{prefix}manifest.json", 200, manifest_bytes)
+        opener.register("GET", f"/storage/v1/object/lesson-packages/{prefix}video.mp4", 200, b"corrupted bytes!")
+
+        # DELETE endpoint for cleanup returns 200
+        opener.register("DELETE", "/storage/v1/object/lesson-packages", 200, b'{"message": "deleted"}')
+
+        with self.assertRaises(ValueError) as ctx:
+            publish_package(
+                package_dir=self.package_dir,
+                supabase_url="http://127.0.0.1:54321",
+                service_key="fake-service-key",
+                bucket="lesson-packages",
+                dry_run=False,
+                opener=opener,
+            )
+
+        self.assertIn("Remote sha256 mismatch", str(ctx.exception))
+
+        # Check cleanup was triggered: DELETE requests were issued for uploaded objects
+        delete_calls = [r for r in opener.requests if r["method"] == "DELETE"]
+        self.assertGreater(len(delete_calls), 0)
+        # DB insert should not have been called
+        db_insert_calls = [r for r in opener.requests if "/rest/v1/lesson_versions" in r["url"] and r["method"] == "POST"]
+        self.assertEqual(len(db_insert_calls), 0)
+
+    def test_upload_failure_triggers_cleanup(self):
+        opener = FakeOpener()
+        opener.register("GET", "/rest/v1/lesson_versions", 200, json.dumps([]).encode("utf-8"))
+
+        prefix = "bollywood-basics/img4941-routine/v1/"
+        # Manifest upload succeeds
+        opener.register("POST", f"/storage/v1/object/lesson-packages/{prefix}manifest.json", 200, b'{"Key": "ok"}')
+        # Video upload fails with 500 error
+        opener.register(
+            "POST",
+            f"/storage/v1/object/lesson-packages/{prefix}video.mp4",
+            500,
+            b'{"error": "upload failed"}',
+        )
+        opener.register("DELETE", "/storage/v1/object/lesson-packages", 200, b'{"message": "deleted"}')
+
+        with self.assertRaises(RuntimeError) as ctx:
+            publish_package(
+                package_dir=self.package_dir,
+                supabase_url="http://127.0.0.1:54321",
+                service_key="fake-service-key",
+                bucket="lesson-packages",
+                dry_run=False,
+                opener=opener,
+            )
+
+        self.assertIn("HTTP 500", str(ctx.exception))
+
+        # Verify that manifest.json (which was uploaded before video failed) was cleaned up via DELETE
+        delete_calls = [r for r in opener.requests if r["method"] == "DELETE"]
+        self.assertEqual(len(delete_calls), 1)
+        self.assertIn("manifest.json", delete_calls[0]["url"])
 
     def test_manifest_validation_error_aborts(self):
         # Mutate manifest to violate schema (e.g. invalid package_version)

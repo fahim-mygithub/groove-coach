@@ -7,7 +7,9 @@ Order: WO-1D backend.
 Validates the lesson package directory using groove_eval.lesson_package,
 verifies file sha256 checksums, checks that the package version does not
 already exist, uploads all assets to Supabase Storage under
-{course}/{lesson}/v{n}/, and inserts a row into `public.lesson_versions`.
+{course}/{lesson}/v{n}/ with upsert-on-retry enabled, performs post-upload
+remote sha256 verification, cleans up on failure, and inserts a row into
+`public.lesson_versions`.
 
 Stdlib only.
 """
@@ -45,7 +47,7 @@ def compute_file_sha256(path: Path) -> str:
 
 def verify_package_files(package_dir: Path, manifest: Dict[str, Any]) -> List[Tuple[str, Path, str]]:
     """Verify that all files in manifest['files'] exist and match their declared sha256.
-    
+
     Returns a list of tuples: (filename, path, sha256).
     """
     verified = []
@@ -117,20 +119,90 @@ def upload_storage_object(
     object_path: str,
     data: bytes,
     content_type: str = "application/octet-stream",
+    upsert: bool = True,
     opener: Optional[urllib.request.OpenerDirector] = None,
 ) -> None:
-    """Upload an object to Supabase Storage."""
+    """Upload an object to Supabase Storage. Upsert defaults to True to allow retrying failed uploads."""
     base_url = supabase_url.rstrip("/")
-    # Object path may contain slashes, URL-encode each segment
     encoded_path = "/".join(urllib.parse.quote(seg, safe="") for seg in object_path.strip("/").split("/"))
     url = f"{base_url}/storage/v1/object/{bucket}/{encoded_path}"
     headers = {
         "apikey": service_key,
         "Authorization": f"Bearer {service_key}",
         "Content-Type": content_type,
-        "x-upsert": "false",
+        "x-upsert": "true" if upsert else "false",
     }
     make_request(url, method="POST", data=data, headers=headers, opener=opener)
+
+
+def download_storage_object(
+    supabase_url: str,
+    service_key: str,
+    bucket: str,
+    object_path: str,
+    opener: Optional[urllib.request.OpenerDirector] = None,
+) -> bytes:
+    """Download an object from Supabase Storage for post-upload verification."""
+    base_url = supabase_url.rstrip("/")
+    encoded_path = "/".join(urllib.parse.quote(seg, safe="") for seg in object_path.strip("/").split("/"))
+    url = f"{base_url}/storage/v1/object/{bucket}/{encoded_path}"
+    headers = {
+        "apikey": service_key,
+        "Authorization": f"Bearer {service_key}",
+    }
+    status, body = make_request(url, method="GET", headers=headers, opener=opener)
+    return body
+
+
+def verify_uploaded_object(
+    supabase_url: str,
+    service_key: str,
+    bucket: str,
+    object_path: str,
+    expected_sha256: str,
+    opener: Optional[urllib.request.OpenerDirector] = None,
+) -> None:
+    """Verify that an uploaded object in Supabase Storage matches the expected sha256."""
+    remote_bytes = download_storage_object(supabase_url, service_key, bucket, object_path, opener=opener)
+    remote_sha256 = hashlib.sha256(remote_bytes).hexdigest().lower()
+    if remote_sha256 != expected_sha256.lower():
+        raise ValueError(
+            f"Remote sha256 mismatch for {object_path}: got {remote_sha256}, expected {expected_sha256}"
+        )
+
+
+def delete_storage_object(
+    supabase_url: str,
+    service_key: str,
+    bucket: str,
+    object_path: str,
+    opener: Optional[urllib.request.OpenerDirector] = None,
+) -> None:
+    """Delete an object from Supabase Storage (used during cleanup on failure)."""
+    base_url = supabase_url.rstrip("/")
+    encoded_path = "/".join(urllib.parse.quote(seg, safe="") for seg in object_path.strip("/").split("/"))
+    url = f"{base_url}/storage/v1/object/{bucket}/{encoded_path}"
+    headers = {
+        "apikey": service_key,
+        "Authorization": f"Bearer {service_key}",
+    }
+    make_request(url, method="DELETE", headers=headers, opener=opener)
+
+
+def cleanup_uploaded_objects(
+    supabase_url: str,
+    service_key: str,
+    bucket: str,
+    object_paths: List[str],
+    opener: Optional[urllib.request.OpenerDirector] = None,
+) -> None:
+    """Attempt to delete partially uploaded objects after a failure."""
+    for path in object_paths:
+        try:
+            delete_storage_object(supabase_url, service_key, bucket, path, opener=opener)
+            print(f"Cleaned up {bucket}/{path}")
+        except Exception as e:
+            print(f"Warning: failed to clean up {bucket}/{path}: {e}", file=sys.stderr)
 
 
 def insert_lesson_version(
@@ -227,47 +299,76 @@ def publish_package(
             "Increment package_version in manifest.json before publishing."
         )
 
-    # 4. Upload assets to Storage under {course}/{lesson}/v{n}/
-    # First manifest.json
-    print(f"Uploading manifest.json to {bucket}/{storage_prefix}manifest.json...")
-    manifest_bytes = manifest_path.read_bytes()
-    upload_storage_object(
-        url,
-        key,
-        bucket,
-        f"{storage_prefix}manifest.json",
-        manifest_bytes,
-        content_type="application/json",
-        opener=opener,
-    )
-
-    # Then package media & pose files
-    for filename, filepath, _ in verified_files:
-        print(f"Uploading {filename} to {bucket}/{storage_prefix}{filename}...")
-        mime_type, _ = mimetypes.guess_type(filepath.name)
-        file_bytes = filepath.read_bytes()
+    uploaded_paths: List[str] = []
+    try:
+        # 4. Upload assets to Storage under {course}/{lesson}/v{n}/
+        # Upload manifest.json first
+        manifest_remote_path = f"{storage_prefix}manifest.json"
+        print(f"Uploading manifest.json to {bucket}/{manifest_remote_path}...")
+        manifest_bytes = manifest_path.read_bytes()
+        manifest_sha256 = compute_file_sha256(manifest_path)
         upload_storage_object(
             url,
             key,
             bucket,
-            f"{storage_prefix}{filename}",
-            file_bytes,
-            content_type=mime_type or "application/octet-stream",
+            manifest_remote_path,
+            manifest_bytes,
+            content_type="application/json",
+            upsert=True,
             opener=opener,
         )
+        uploaded_paths.append(manifest_remote_path)
 
-    # 5. Insert lesson_versions row
-    print(f"Inserting lesson_versions row for lesson {lesson_id} v{package_version}...")
-    created_row = insert_lesson_version(url, key, version_record, opener=opener)
-    print("Publishing complete!")
-    return {
-        "dry_run": False,
-        "course_slug": course_slug,
-        "lesson_slug": lesson_slug,
-        "package_version": package_version,
-        "storage_prefix": storage_prefix,
-        "created_row": created_row,
-    }
+        # Upload package media & pose files
+        for filename, filepath, _ in verified_files:
+            file_remote_path = f"{storage_prefix}{filename}"
+            print(f"Uploading {filename} to {bucket}/{file_remote_path}...")
+            mime_type, _ = mimetypes.guess_type(filepath.name)
+            file_bytes = filepath.read_bytes()
+            upload_storage_object(
+                url,
+                key,
+                bucket,
+                file_remote_path,
+                file_bytes,
+                content_type=mime_type or "application/octet-stream",
+                upsert=True,
+                opener=opener,
+            )
+            uploaded_paths.append(file_remote_path)
+
+        # 5. Post-upload verification: download each object and check sha256
+        print("Verifying uploaded objects against local sha256 checksums...")
+        print(f"Verifying {manifest_remote_path}...")
+        verify_uploaded_object(url, key, bucket, manifest_remote_path, manifest_sha256, opener=opener)
+
+        for filename, _, expected_hash in verified_files:
+            file_remote_path = f"{storage_prefix}{filename}"
+            print(f"Verifying {file_remote_path}...")
+            verify_uploaded_object(url, key, bucket, file_remote_path, expected_hash, opener=opener)
+        print("Post-upload sha256 verification succeeded for all objects.")
+
+        # 6. Insert lesson_versions row
+        print(f"Inserting lesson_versions row for lesson {lesson_id} v{package_version}...")
+        created_row = insert_lesson_version(url, key, version_record, opener=opener)
+        print("Publishing complete!")
+        return {
+            "dry_run": False,
+            "course_slug": course_slug,
+            "lesson_slug": lesson_slug,
+            "package_version": package_version,
+            "storage_prefix": storage_prefix,
+            "created_row": created_row,
+        }
+
+    except Exception:
+        if uploaded_paths:
+            print(
+                f"Publishing failed. Cleaning up {len(uploaded_paths)} uploaded objects from storage...",
+                file=sys.stderr,
+            )
+            cleanup_uploaded_objects(url, key, bucket, uploaded_paths, opener=opener)
+        raise
 
 
 def main(argv: Optional[List[str]] = None) -> int:
