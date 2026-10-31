@@ -6,17 +6,28 @@ Swift mirror: ios/GrooveCore/Tests/GrooveCoreTests/ScoringFeaturesTests.swift (s
 from __future__ import annotations
 
 import copy
+import json
 import unittest
+from pathlib import Path
 
+from groove_eval import lesson_package
 from groove_eval.generate_feature_clips import generate_feature_dataset
 from groove_eval.generate_golden_clips import generate_golden_dataset
+from groove_eval.generate_lesson_clips import generate_lesson_dataset
 from groove_eval.scoring import (
+    DEFAULT_TOLERANCE,
     compute_joint_tolerances,
+    deep_merge,
     load_config,
+    merge_config,
+    reference_velocity_factors,
     score_attempt,
     smooth_frames,
     validate_against_schema,
+    windows_at,
 )
+
+ROOT = Path(__file__).resolve().parent.parent
 
 
 class TestScoringFeatures(unittest.TestCase):
@@ -151,6 +162,122 @@ class TestScoringFeatures(unittest.TestCase):
         self.assertTrue(ok, errs)
         absent = self._score_feature("feat_03_no_hits_no_hands")["between_rep_digest"]
         self.assertNotIn("hand_score", absent)
+
+
+class TestLessonFeatures(unittest.TestCase):
+    """Windows, rate stretch, velocity and occlusion tolerances on fixtures/lesson_clips.json.
+
+    Swift mirror: ios/GrooveCore/Tests/GrooveCoreTests/ScoringFeaturesTests.swift (same clips and expectations)."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.config = load_config()
+        cls.dataset = generate_lesson_dataset()
+        cls.refs = cls.dataset["references"]
+        cls.clips = {c["clip_id"]: c for c in cls.dataset["golden_clips"]}
+
+    def _score(self, clip_id: str) -> dict:
+        clip = self.clips[clip_id]
+        return score_attempt(clip, self.refs[clip["move_tag"]], merge_config(self.config, clip.get("config_overrides")))
+
+    @staticmethod
+    def _flagged(res: dict) -> set:
+        j = res["joints"]
+        return {v["joint"] for v in j["verdicts"] + j["angle_verdicts"] if v["severity"] != "ok"}
+
+    def test_committed_fixture_matches_the_generator(self) -> None:
+        with open(ROOT / "fixtures" / "lesson_clips.json", "r", encoding="utf-8") as f:
+            self.assertEqual(json.load(f), json.loads(json.dumps(self.dataset)))
+
+    def test_expected_labels(self) -> None:
+        for clip_id, clip in self.clips.items():
+            self.assertEqual(self._score(clip_id)["passed"], clip["expected"]["passed"], clip_id)
+
+    def test_windows_come_from_the_manifest_slice(self) -> None:
+        ref = self.refs["clasp_windowed"]
+        self.assertEqual(len(ref["windows"]), 1)
+        w = ref["windows"][0]
+        self.assertEqual(w["mask"], ["hand_shape"])
+        self.assertAlmostEqual(w["start_s"], ref["beat_times"][2] - 0.2, places=4)  # rebased to the segment start
+        self.assertEqual(windows_at(ref["windows"], ref["beat_times"][3]), [w])
+        self.assertEqual(windows_at(ref["windows"], ref["beat_times"][0]), [])
+        self.assertEqual(windows_at(ref["windows"], w["end_s"]), [])  # end is exclusive
+        self.assertEqual(self.refs["clasp"]["windows"], [])
+
+    def test_clasp_window_masks_hands_and_scales_wrists(self) -> None:
+        plain = self._score("lesson_07_clasp_no_window")
+        windowed = self._score("lesson_08_clasp_window_mask")
+        near = self._score("lesson_09_clasp_wrist_proximity")
+        self.assertTrue({"leftWrist", "rightWrist"} <= self._flagged(plain))
+        self.assertEqual(plain["hands"]["masked_samples"], 0)
+        self.assertLess(plain["hands"]["hand_score"], 80.0)
+        self.assertEqual(windowed["hands"]["masked_samples"], 12)  # counts 3-6 x 3 samples
+        self.assertEqual(windowed["hands"]["hand_score"], 100.0)
+        self.assertEqual(self._flagged(windowed), set())
+        # No window, but the occlusion rule sees the wrists together and widens them on every beat.
+        self.assertEqual(near["hands"]["masked_samples"], 0)
+        self.assertFalse({"leftWrist", "rightWrist"} & self._flagged(near))
+
+    def test_stretched_windows_and_rate_70(self) -> None:
+        stretched = lesson_package.stretch(self.refs["clasp_windowed"], 0.7)
+        self.assertAlmostEqual(stretched["windows"][0]["start_s"], self.refs["clasp_windowed"]["windows"][0]["start_s"] / 0.7)
+        ref = self.refs["hits_rate_70"]
+        self.assertEqual(ref["speed_pct"], 70)
+        self.assertAlmostEqual(ref["bpm"], 112.5 * 0.7)
+        clean = self._score("lesson_10_rate70_clean")
+        late = self._score("lesson_11_rate70_late")
+        self.assertTrue(clean["passed"])
+        self.assertEqual(clean["hits"]["status"], "available")
+        self.assertGreaterEqual(clean["hits"]["hit_score"], 95.0)
+        self.assertFalse(late["passed"])
+        self.assertGreater(late["timing"]["mean_offset_ms"], 120.0)
+
+    def test_velocity_factors_follow_the_reference_speed(self) -> None:
+        ref = self.refs["arm_swing"]
+        frames = ref["frames"]
+        beat = ref["beat_times"][2]
+        cfg = deep_merge(DEFAULT_TOLERANCE, {"velocity_scale": 0.5})
+        pos, ang = reference_velocity_factors(frames, beat, (0.0, -1.0, 0.0), cfg)
+        self.assertGreater(pos["leftWrist"], 2.0)  # ~3 rad/s swing through the beat
+        self.assertLessEqual(pos["leftWrist"], cfg["velocity_max_factor"])
+        self.assertAlmostEqual(pos["leftShoulder"], 1.0, delta=0.05)  # the shoulders hardly move
+        self.assertIn("leftKnee", ang)
+        capped = reference_velocity_factors(frames, beat, (0.0, -1.0, 0.0), dict(cfg, velocity_scale=50.0))[0]
+        self.assertEqual(capped["leftWrist"], cfg["velocity_max_factor"])
+        self.assertEqual(reference_velocity_factors(frames, beat, (0.0, -1.0, 0.0), dict(cfg, velocity_half_window_s=0.0)), ({}, {}))
+
+    def test_velocity_scaling_forgives_fast_beats(self) -> None:
+        off = self._score("lesson_15_velocity_off")
+        on = self._score("lesson_16_velocity_scaled")
+        self.assertTrue({"leftWrist", "rightWrist"} <= self._flagged(off))
+        self.assertEqual(self._flagged(on), set())
+        tol_off = {v["joint"]: v["tolerance"] for v in off["joints"]["verdicts"]}
+        tol_on = {v["joint"]: v["tolerance"] for v in on["joints"]["verdicts"]}
+        self.assertEqual(tol_off, tol_on)  # base tolerances unchanged; the per-beat error is scaled
+
+    def test_occlusion_widens_or_masks_dropouts(self) -> None:
+        off = self._score("lesson_17_occlusion_off")
+        widened = self._score("lesson_18_occlusion_widened")
+        masked = self._score("lesson_19_occlusion_masked")
+        self.assertTrue({"leftWrist", "rightWrist"} <= self._flagged(off))
+        self.assertEqual(self._flagged(widened), set())
+        self.assertEqual(self._flagged(masked), set())
+        err = {name: {v["joint"]: v["error"] for v in r["joints"]["verdicts"]} for name, r in
+               (("off", off), ("widened", widened), ("masked", masked))}
+        self.assertLess(err["widened"]["leftWrist"], err["off"]["leftWrist"])
+        self.assertLess(err["masked"]["leftWrist"], err["widened"]["leftWrist"])
+        self.assertEqual(err["masked"]["leftHip"], err["off"]["leftHip"])  # confident joints are untouched
+
+    def test_new_keys_are_no_ops_on_existing_fixtures(self) -> None:
+        features = generate_feature_dataset()
+        ref = features["references"]["arm_hits"]
+        clip = features["golden_clips"][1]
+        neutral = merge_config(self.config, {"scoring_thresholds": {
+            "tolerance": {"velocity_scale": 0.0, "occlusion": {"factor": 1.0, "mask": False, "wrist_distance": 0.0}},
+            "retarget": {"enabled": False},
+        }})
+        self.assertEqual(score_attempt(clip, ref, self.config), score_attempt(clip, ref, neutral))
+        self.assertEqual(score_attempt(clip, dict(ref, windows=[]), self.config), score_attempt(clip, ref, self.config))
 
 
 if __name__ == "__main__":
