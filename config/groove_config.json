@@ -47,6 +47,38 @@
     "gate": {
       "min_good_or_better_beat_ratio": 0.80,
       "speed_ladder_pct": [50, 75, 90, 100]
+    },
+    "smoothing": {
+      "enabled": true,
+      "min_cutoff": 1.2,
+      "beta": 3.0,
+      "d_cutoff": 1.0
+    },
+    "hits": {
+      "enabled": true,
+      "gate": false,
+      "pass_min_score": 60.0,
+      "window_s": 0.110,
+      "moving_threshold": 1.0,
+      "settle_threshold": 0.4,
+      "min_settle_s": 0.115,
+      "beat_tolerance_ms": 150.0,
+      "perfect_max_ms": 60.0,
+      "good_max_ms": 120.0
+    },
+    "joint_tolerance": {
+      "enabled": true,
+      "k": 2.0,
+      "position_floor": 0.06,
+      "position_ceiling": 0.30,
+      "angle_floor_deg": 8.0,
+      "angle_ceiling_deg": 45.0,
+      "warn_factor": 2.0
+    },
+    "hands": {
+      "enabled": true,
+      "gate": false,
+      "pass_min_score": 60.0
     }
   }
 }
