@@ -21,6 +21,7 @@ This module:
 
 from __future__ import annotations
 
+import copy
 import json
 import re
 import uuid
@@ -141,9 +142,88 @@ def map_src_to_out(t_src: float, timemap: Sequence[Mapping[str, float]]) -> floa
     raise ValueError(f"Source time {t_src:.3f} s falls outside of timemap {timemap}")
 
 
+def pad_cut_plan(
+    breakdown: Mapping[str, Any],
+    tail_pad_s: float = 0.25,
+    head_pad_s: float = 0.0,
+) -> Dict[str, Any]:
+    """Extend cut_plan pieces within source duration and usable shots.
+
+    Pads the end of each cut_plan piece by `tail_pad_s` and the start by `head_pad_s`,
+    clamped so the piece does not exceed the source duration, does not extend past
+    the usable shot containing it, and does not overlap adjacent cut pieces.
+    """
+    res = copy.deepcopy(dict(breakdown))
+    duration_s = float(res["source"]["duration_s"])
+    usable_shots = [s for s in res.get("shots", []) if s.get("usable") is True]
+    cut_plan = res.get("cut_plan", [])
+    if not cut_plan:
+        return res
+
+    new_cuts: List[Dict[str, Any]] = []
+    for i, cut in enumerate(cut_plan):
+        cur_start = float(cut["src_start_s"])
+        cur_end = float(cut["src_end_s"])
+
+        # Match usable shot enclosing or overlapping this cut / its segments
+        matching_shot = None
+        for shot in usable_shots:
+            s_start = float(shot["start_s"])
+            s_end = float(shot["end_s"])
+            if s_start - RATE_EPS <= cur_start and cur_end <= s_end + RATE_EPS:
+                matching_shot = shot
+                break
+
+        if matching_shot is None:
+            contained_segs = [
+                s for s in res.get("segments", [])
+                if cur_start - RATE_EPS <= float(s["start_s"]) and float(s["end_s"]) <= cur_end + RATE_EPS
+            ]
+            if contained_segs:
+                seg_min = min(float(s["start_s"]) for s in contained_segs)
+                seg_max = max(float(s["end_s"]) for s in contained_segs)
+                for shot in usable_shots:
+                    s_start = float(shot["start_s"])
+                    s_end = float(shot["end_s"])
+                    if s_start - RATE_EPS <= seg_min and seg_max <= s_end + RATE_EPS:
+                        matching_shot = shot
+                        break
+
+        if matching_shot is None:
+            for shot in usable_shots:
+                s_start = float(shot["start_s"])
+                s_end = float(shot["end_s"])
+                if max(cur_start, s_start) < min(cur_end, s_end):
+                    matching_shot = shot
+                    break
+
+        shot_start = float(matching_shot["start_s"]) if matching_shot else 0.0
+        shot_end = float(matching_shot["end_s"]) if matching_shot else duration_s
+
+        prev_end = float(new_cuts[-1]["src_end_s"]) if new_cuts else 0.0
+        min_start = max(0.0, shot_start, prev_end)
+        new_start = max(min_start, cur_start - head_pad_s)
+
+        next_start = float(cut_plan[i + 1]["src_start_s"]) if i + 1 < len(cut_plan) else duration_s
+        max_end = min(duration_s, shot_end, next_start)
+        new_end = min(max_end, cur_end + tail_pad_s)
+
+        new_start = round(new_start, 3)
+        new_end = round(max(new_start, new_end), 3)
+
+        new_cut = dict(cut)
+        new_cut["src_start_s"] = new_start
+        new_cut["src_end_s"] = new_end
+        new_cuts.append(new_cut)
+
+    res["cut_plan"] = new_cuts
+    return res
+
+
 def validate_breakdown(
     breakdown: Mapping[str, Any],
     schema: Optional[Mapping[str, Any]] = None,
+    tail_pad_s: float = 0.25,
 ) -> List[str]:
     """Validate an Argon breakdown dictionary against schema and cross-field rules."""
     loaded_schema = schema if schema is not None else load_breakdown_schema()
@@ -175,6 +255,24 @@ def validate_breakdown(
         if start < last_end - RATE_EPS:
             errors.append(f"{where}: cuts must be ascending and non-overlapping (start {start} < previous end {last_end})")
         last_end = max(last_end, end)
+
+    # 2b. Cut plan tail padding past contained segments
+    segments = breakdown.get("segments", [])
+    for i, cut in enumerate(cut_plan):
+        start = float(cut["src_start_s"])
+        end = float(cut["src_end_s"])
+        where = f"$.cut_plan[{i}]"
+        contained = [
+            s for s in segments
+            if start - RATE_EPS <= float(s["start_s"]) and float(s["end_s"]) <= end + RATE_EPS
+        ]
+        if contained and tail_pad_s > 0:
+            last_seg_end = max(float(s["end_s"]) for s in contained)
+            if end < last_seg_end + tail_pad_s - RATE_EPS:
+                errors.append(
+                    f"{where}.src_end_s: {end:.3f} s must extend at least {tail_pad_s:.3f} s "
+                    f"past last contained segment end {last_seg_end:.3f} s (expected >= {last_seg_end + tail_pad_s:.3f} s)"
+                )
 
     # 3. Shots inside duration, ascending
     shots = breakdown["shots"]
@@ -250,6 +348,27 @@ def validate_breakdown(
                     f"(nearest beat {nearest_beat:.3f} s, diff {int(diff * 1000)} ms)"
                 )
 
+        # Beat grid point exists at segment end inside the kept range
+        k_end = round((end - first_downbeat_s) / beat_period)
+        beat_end = first_downbeat_s + k_end * beat_period
+        matching_cut = next(
+            (c for c in cut_plan if float(c["src_start_s"]) - RATE_EPS <= start <= float(c["src_end_s"]) + RATE_EPS),
+            None,
+        )
+        if matching_cut is not None:
+            c_start = float(matching_cut["src_start_s"])
+            c_end = float(matching_cut["src_end_s"])
+            if k_end < 0 or beat_end < c_start - RATE_EPS or beat_end > c_end + RATE_EPS:
+                errors.append(
+                    f"{where}.end_s: beat grid point {beat_end:.3f} s at segment end {end:.3f} s "
+                    f"does not exist inside kept range [{c_start:.3f}, {c_end:.3f}]"
+                )
+        else:
+            errors.append(
+                f"{where}.end_s: beat grid point {beat_end:.3f} s at segment end {end:.3f} s "
+                f"does not exist inside kept range"
+            )
+
     # 5. Teach order check
     teach_order = breakdown["teach_order"]
     if len(teach_order) != len(set(teach_order)):
@@ -288,18 +407,23 @@ def to_lesson_source(
     lesson_slug: Optional[str] = None,
     lesson_id: Optional[str] = None,
     title: Optional[str] = None,
+    tail_pad_s: float = 0.25,
+    head_pad_s: float = 0.0,
 ) -> Dict[str, Any]:
     """Convert a validated Argon breakdown into Groove Coach lesson source format.
 
     Maps all times to the recut output timeline via timemap.
     """
-    errors = validate_breakdown(breakdown)
-    if errors:
-        raise ValueError("Argon breakdown validation failed:\n  " + "\n  ".join(errors))
-
     if timemap is None:
+        breakdown = pad_cut_plan(breakdown, tail_pad_s=tail_pad_s, head_pad_s=head_pad_s)
+        errors = validate_breakdown(breakdown, tail_pad_s=tail_pad_s)
+        if errors:
+            raise ValueError("Argon breakdown validation failed:\n  " + "\n  ".join(errors))
         timemap = build_timemap_from_cut_plan(breakdown["cut_plan"])
     else:
+        errors = validate_breakdown(breakdown, tail_pad_s=0.0)
+        if errors:
+            raise ValueError("Argon breakdown validation failed:\n  " + "\n  ".join(errors))
         tm_errors = validate_timemap(timemap)
         if tm_errors:
             raise ValueError("Timemap validation failed:\n  " + "\n  ".join(tm_errors))

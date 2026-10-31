@@ -44,15 +44,18 @@ Your task is to analyze the dance choreography and return a **machine-checkable 
 4. **No Invented Beats**:
    - Anchor the beat grid to the first clear kinematic and audible downbeat (`first_downbeat_s`).
    - Every segment's `start_s` and `end_s` **must land within ±40 ms** of the calculated BPM grid ($t = \text{first\_downbeat\_s} + k \times \frac{60}{\text{bpm}}$).
-5. **Teaching Order (Pedagogical Progression)**:
+5. **Cut Plan Boundaries & Tail Padding**:
+   - Start the cut on or before the count-in's last beat (`src_start_s <= first_downbeat_s` or count-in's last beat).
+   - Leave at least 0.5 s after the last counted beat (`src_end_s >= last_segment_end + 0.5 s`). Never end the cut plan exactly on the last segment boundary, as audio/video encoder rounding will truncate the final beat and cause packaging validation to fail. Ensure the usable shot framing covers this padding window.
+6. **Teaching Order (Pedagogical Progression)**:
    - Rank segment IDs in `teach_order` (e.g. `["C", "A", "B", "D", "full"]`).
    - Rule of thumb: Teach easiest first, **unless** the routine has a distinct "hook" or signature movement that benefits from early mastery (e.g. hook groove taught first, followed by intro, bridge, finale, and full run).
-6. **Occlusion & Clasp Windows**:
+7. **Occlusion & Clasp Windows**:
    - Identify moments where the hands clasp (e.g. *Namaste* / *Anjali mudra*), cover the face, or cross the torso.
    - Mark the time window and specify the affected canonical joints (`leftWrist`, `rightWrist`, `nose`) so the engine applies tolerance scaling.
-7. **Free-Text Move Names**:
+8. **Free-Text Move Names**:
    - Move names are free-text descriptions (e.g., `"Right Ear Flick & Left Hip Pops"`). Do not force into any predefined enum.
-8. **JSON Only**:
+9. **JSON Only**:
    - Return **strictly valid JSON** matching the schema below. No conversational preamble or trailing commentary.
 
 ---
@@ -296,13 +299,13 @@ Your task is to analyze the dance choreography and return a **machine-checkable 
     },
     {
       "start_s": 0.53,
-      "end_s": 14.93,
+      "end_s": 15.50,
       "camera": "static",
       "usable": true,
-      "why": "Full body visible, stable camera framing active choreography"
+      "why": "Full body visible, stable camera framing active choreography and post-routine pad"
     },
     {
-      "start_s": 14.93,
+      "start_s": 15.50,
       "end_s": 16.33,
       "camera": "moving",
       "usable": false,
@@ -312,7 +315,7 @@ Your task is to analyze the dance choreography and return a **machine-checkable 
   "cut_plan": [
     {
       "src_start_s": 0.53,
-      "src_end_s": 14.93
+      "src_end_s": 15.50
     }
   ],
   "crop": {

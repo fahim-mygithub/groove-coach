@@ -14,6 +14,7 @@ from authoring.lesson_source import (
     build_timemap_from_cut_plan,
     load_breakdown_schema,
     map_src_to_out,
+    pad_cut_plan,
     slugify,
     to_lesson_source,
     validate_breakdown,
@@ -31,7 +32,12 @@ class TestArgonLessonSource(unittest.TestCase):
     def setUp(self) -> None:
         self.assertTrue(FIXTURE_PATH.exists(), f"Missing fixture {FIXTURE_PATH}")
         with open(FIXTURE_PATH, "r", encoding="utf-8") as f:
-            self.breakdown: Dict[str, Any] = json.load(f)
+            self.tight_breakdown: Dict[str, Any] = json.load(f)
+        # Pad breakdown so standard tests have a valid breakdown meeting tail_pad_s requirement
+        self.breakdown = copy.deepcopy(self.tight_breakdown)
+        self.breakdown["shots"][1]["end_s"] = 15.50
+        self.breakdown["shots"][2]["start_s"] = 15.50
+        self.breakdown["cut_plan"][0]["src_end_s"] = 15.50
 
     def test_schema_loads_properly(self) -> None:
         schema = load_breakdown_schema()
@@ -216,6 +222,74 @@ class TestArgonLessonSource(unittest.TestCase):
         self.assertEqual(slugify("Filmi Routine 1!"), "filmi-routine-1")
         self.assertEqual(slugify("---special @# chars---"), "special-chars")
         self.assertEqual(slugify(""), "routine")
+
+    def test_negative_missing_tail_pad(self) -> None:
+        doc = copy.deepcopy(self.breakdown)
+        # Cut plan ends on the segment end (14.93 s), missing tail padding
+        doc["cut_plan"] = [{"src_start_s": 0.53, "src_end_s": 14.93}]
+        errors = validate_breakdown(doc, tail_pad_s=0.25)
+        self.assertTrue(any("must extend at least" in e for e in errors))
+
+    def test_negative_beat_point_not_in_kept_range(self) -> None:
+        doc = copy.deepcopy(self.breakdown)
+        # Cut plan ends at 14.90 s, before the beat grid point at 14.93 s
+        doc["cut_plan"] = [{"src_start_s": 0.53, "src_end_s": 14.90}]
+        errors = validate_breakdown(doc, tail_pad_s=0.0)
+        self.assertTrue(any("beat grid point" in e for e in errors))
+
+    def test_pad_cut_plan_extends_within_usable_shot(self) -> None:
+        doc = copy.deepcopy(self.breakdown)
+        doc["cut_plan"] = [{"src_start_s": 0.53, "src_end_s": 14.93}]
+        padded = pad_cut_plan(doc, tail_pad_s=0.25, head_pad_s=0.1)
+        self.assertEqual(padded["cut_plan"][0]["src_start_s"], 0.53)  # clamped to shot start 0.53
+        self.assertAlmostEqual(padded["cut_plan"][0]["src_end_s"], 15.18)  # 14.93 + 0.25 = 15.18 <= 15.50
+
+    def test_tight_plan_regression_padded_and_converts(self) -> None:
+        # Reproduce tight plan where cut_plan ended exactly on the last segment boundary (14.93 s)
+        tight = copy.deepcopy(self.breakdown)
+        tight["cut_plan"] = [{"src_start_s": 0.53, "src_end_s": 14.93}]
+
+        # 1. validate_breakdown fails on the tight plan due to missing tail padding
+        errors = validate_breakdown(tight, tail_pad_s=0.25)
+        self.assertTrue(any("must extend at least" in e for e in errors))
+
+        # 2. Padded cut plan extends past the last segment end
+        padded = pad_cut_plan(tight, tail_pad_s=0.25)
+        self.assertAlmostEqual(padded["cut_plan"][0]["src_end_s"], 15.18)
+        self.assertEqual(validate_breakdown(padded), [])
+
+        # 3. Conversion path automatically pads before building timemap
+        source = to_lesson_source(tight)
+        self.assertIn("beat_grid", source)
+        self.assertIn("segments", source)
+
+        # 4. Manifest assembled from the automatically padded conversion validates
+        dur = padded["cut_plan"][0]["src_end_s"] - padded["cut_plan"][0]["src_start_s"]
+        beat_grid = build_beat_grid(
+            bpm=source["beat_grid"]["bpm"],
+            anchor_s=source["beat_grid"]["anchor_s"],
+            duration_s=dur,
+        )
+        video_meta = {
+            "duration_s": dur,
+            "fps": 30.0,
+            "width": 720,
+            "height": 1280,
+        }
+        files_sha = {
+            "video.mp4": "a" * 64,
+            "reference_pose.json": "b" * 64,
+            "poster.jpg": "c" * 64,
+        }
+        manifest = assemble_manifest(
+            lesson_source=source,
+            video_meta=video_meta,
+            reference_frame_count=int(dur * 30),
+            beat_grid=beat_grid,
+            files_sha256=files_sha,
+        )
+        manifest_errors = validate_manifest(manifest)
+        self.assertEqual(manifest_errors, [], f"Manifest validation errors: {manifest_errors}")
 
 
 if __name__ == "__main__":
