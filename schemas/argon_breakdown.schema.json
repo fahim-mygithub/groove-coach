@@ -1,0 +1,216 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://groove-coach/schemas/argon_breakdown.schema.json",
+  "title": "Argon dance video breakdown response",
+  "description": "Machine-checkable breakdown produced by Argon (Gemini video model) for choreography recutting and lesson authoring.",
+  "type": "object",
+  "required": [
+    "source",
+    "style",
+    "bpm",
+    "first_downbeat_s",
+    "beats_per_phrase",
+    "dancers",
+    "target_dancer_id",
+    "shots",
+    "cut_plan",
+    "mirrored",
+    "moves",
+    "segments",
+    "teach_order",
+    "occlusion_windows",
+    "capture_notes"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "source": {
+      "type": "object",
+      "required": ["url", "title", "channel", "duration_s"],
+      "additionalProperties": false,
+      "properties": {
+        "url": { "type": "string", "minLength": 1 },
+        "title": { "type": "string", "minLength": 1 },
+        "channel": { "type": "string" },
+        "duration_s": { "type": "number", "exclusiveMinimum": 0 }
+      }
+    },
+    "style": { "type": "string", "minLength": 1 },
+    "bpm": { "type": "number", "exclusiveMinimum": 0 },
+    "first_downbeat_s": { "type": "number", "minimum": 0 },
+    "beats_per_phrase": { "type": "integer", "minimum": 1 },
+    "dancers": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["id", "description", "bbox_px"],
+        "additionalProperties": false,
+        "properties": {
+          "id": { "type": "string", "pattern": "^[A-Za-z0-9_-]+$" },
+          "description": { "type": "string", "minLength": 1 },
+          "bbox_px": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "object",
+              "required": ["t_s", "x", "y", "w", "h"],
+              "additionalProperties": false,
+              "properties": {
+                "t_s": { "type": "number", "minimum": 0 },
+                "x": { "type": "number", "minimum": 0 },
+                "y": { "type": "number", "minimum": 0 },
+                "w": { "type": "number", "exclusiveMinimum": 0 },
+                "h": { "type": "number", "exclusiveMinimum": 0 }
+              }
+            }
+          }
+        }
+      }
+    },
+    "target_dancer_id": { "type": "string", "pattern": "^[A-Za-z0-9_-]+$" },
+    "shots": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["start_s", "end_s", "camera", "usable", "why"],
+        "additionalProperties": false,
+        "properties": {
+          "start_s": { "type": "number", "minimum": 0 },
+          "end_s": { "type": "number", "exclusiveMinimum": 0 },
+          "camera": { "enum": ["static", "moving"] },
+          "usable": { "type": "boolean" },
+          "why": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "cut_plan": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["src_start_s", "src_end_s"],
+        "additionalProperties": false,
+        "properties": {
+          "src_start_s": { "type": "number", "minimum": 0 },
+          "src_end_s": { "type": "number", "exclusiveMinimum": 0 }
+        }
+      }
+    },
+    "crop": {
+      "type": "object",
+      "required": ["x", "y", "w", "h"],
+      "additionalProperties": false,
+      "properties": {
+        "x": { "type": "number", "minimum": 0 },
+        "y": { "type": "number", "minimum": 0 },
+        "w": { "type": "number", "exclusiveMinimum": 0 },
+        "h": { "type": "number", "exclusiveMinimum": 0 }
+      }
+    },
+    "flip": { "type": "boolean" },
+    "mirrored": { "type": "boolean" },
+    "moves": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": [
+          "name",
+          "start_s",
+          "end_s",
+          "counts",
+          "lead_parts",
+          "difficulty",
+          "description"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "name": { "type": "string", "minLength": 1 },
+          "start_s": { "type": "number", "minimum": 0 },
+          "end_s": { "type": "number", "exclusiveMinimum": 0 },
+          "counts": { "type": "string", "minLength": 1 },
+          "lead_parts": {
+            "type": "array",
+            "items": { "type": "string", "minLength": 1 }
+          },
+          "difficulty": { "type": "integer", "minimum": 1, "maximum": 5 },
+          "description": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "segments": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "title",
+          "start_s",
+          "end_s",
+          "moves",
+          "difficulty",
+          "focus",
+          "cues"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "id": { "type": "string", "pattern": "^[A-Za-z0-9_-]+$" },
+          "kind": { "enum": ["segment", "full_run"] },
+          "title": { "type": "string", "minLength": 1 },
+          "start_s": { "type": "number", "minimum": 0 },
+          "end_s": { "type": "number", "exclusiveMinimum": 0 },
+          "moves": {
+            "type": "array",
+            "items": { "type": "string", "minLength": 1 }
+          },
+          "difficulty": { "type": "integer", "minimum": 1, "maximum": 5 },
+          "focus": {
+            "type": "array",
+            "items": {
+              "enum": ["arms", "hands", "hips", "feet", "torso", "head"]
+            }
+          },
+          "cues": {
+            "type": "array",
+            "items": { "type": "string", "minLength": 1 }
+          },
+          "config_overrides": { "type": "object" },
+          "teach_order": { "type": "integer", "minimum": 1 }
+        }
+      }
+    },
+    "teach_order": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "type": "string", "pattern": "^[A-Za-z0-9_-]+$" }
+    },
+    "occlusion_windows": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["start_s", "end_s", "joints", "kind"],
+        "additionalProperties": false,
+        "properties": {
+          "start_s": { "type": "number", "minimum": 0 },
+          "end_s": { "type": "number", "exclusiveMinimum": 0 },
+          "joints": {
+            "type": "array",
+            "items": { "type": "string", "minLength": 1 }
+          },
+          "kind": { "enum": ["clasp", "occlusion"] },
+          "mask": {
+            "type": "array",
+            "items": { "type": "string", "minLength": 1 }
+          },
+          "tolerance_scale": {
+            "type": "object",
+            "additionalProperties": { "type": "number", "exclusiveMinimum": 0 }
+          }
+        }
+      }
+    },
+    "capture_notes": { "type": "string", "minLength": 1 }
+  }
+}
