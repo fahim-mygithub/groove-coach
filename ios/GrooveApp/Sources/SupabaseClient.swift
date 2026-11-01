@@ -108,6 +108,72 @@ public final class SupabaseClient: ObservableObject {
         return session
     }
 
+    // MARK: - Auth: Email + Password
+
+    /// Sign in using email and password (POST auth/v1/token?grant_type=password).
+    @discardableResult
+    public func signInWithPassword(email: String, password: String) async throws -> SupabaseSession {
+        isBusy = true
+        defer { isBusy = false }
+
+        var components = URLComponents(url: baseURL.appendingPathComponent("auth/v1/token"), resolvingAgainstBaseURL: true)
+        components?.queryItems = [URLQueryItem(name: "grant_type", value: "password")]
+        guard let endpoint = components?.url else {
+            throw SupabaseError.invalidURL
+        }
+
+        var request = URLRequest(url: endpoint)
+        request.httpMethod = "POST"
+        request.setValue(anonKey, forHTTPHeaderField: "apikey")
+        request.setValue("Bearer \(anonKey)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+
+        let body: [String: Any] = [
+            "email": email.trimmingCharacters(in: .whitespacesAndNewlines),
+            "password": password
+        ]
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+
+        let (data, response) = try await urlSession.data(for: request)
+        try checkResponse(response, data: data)
+
+        let decoder = JSONDecoder()
+        let session = try decoder.decode(SupabaseSession.self, from: data)
+        saveSession(session)
+        return session
+    }
+
+    /// Sign up a new user using email and password (POST auth/v1/signup).
+    @discardableResult
+    public func signUp(email: String, password: String) async throws -> SupabaseSession {
+        isBusy = true
+        defer { isBusy = false }
+
+        let endpoint = baseURL.appendingPathComponent("auth/v1/signup")
+        var request = URLRequest(url: endpoint)
+        request.httpMethod = "POST"
+        request.setValue(anonKey, forHTTPHeaderField: "apikey")
+        request.setValue("Bearer \(anonKey)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+
+        let body: [String: Any] = [
+            "email": email.trimmingCharacters(in: .whitespacesAndNewlines),
+            "password": password
+        ]
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+
+        let (data, response) = try await urlSession.data(for: request)
+        try checkResponse(response, data: data)
+
+        let decoder = JSONDecoder()
+        guard let session = try? decoder.decode(SupabaseSession.self, from: data),
+              !session.access_token.isEmpty else {
+            throw SupabaseError.missingAccessToken("No access token returned from sign up. Email confirmation may be required.")
+        }
+        saveSession(session)
+        return session
+    }
+
     /// Refresh the session tokens using the stored refresh_token.
     @discardableResult
     public func refreshToken() async throws -> SupabaseSession {
@@ -313,6 +379,7 @@ public enum SupabaseError: LocalizedError {
     case requestFailed(statusCode: Int, message: String)
     case notAuthenticated
     case networkError(Error)
+    case missingAccessToken(String)
 
     public var errorDescription: String? {
         switch self {
@@ -324,6 +391,8 @@ public enum SupabaseError: LocalizedError {
             return "Not authenticated with Supabase."
         case .networkError(let error):
             return "Network error: \(error.localizedDescription)"
+        case .missingAccessToken(let msg):
+            return msg
         }
     }
 }

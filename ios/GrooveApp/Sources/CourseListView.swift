@@ -8,7 +8,7 @@ import UniformTypeIdentifiers
 /// - Downloads lesson packages atomically with SHA-256 validation,
 /// - DEV MODE: Ingests lesson packages directly from a folder in the Files app,
 /// - Adaptive speed rate badges and progression gating (locked until previous segment unlocks),
-/// - Email OTP login sheet for Supabase auth.
+/// - Email & password login sheet for Supabase auth.
 public struct CourseListView: View {
     @EnvironmentObject private var lessonStore: LessonStore
     @StateObject private var supabase = SupabaseClient.shared
@@ -110,8 +110,14 @@ public struct CourseListView: View {
                     }
                 }
             }
-            .sheet(isPresented: $showAuthSheet) {
-                SupabaseAuthSheet()
+            .sheet(isPresented: $showAuthSheet, onDismiss: {
+                if supabase.isAuthenticated {
+                    Task { await refreshCatalog() }
+                }
+            }) {
+                SupabaseAuthSheet(onSuccess: {
+                    Task { await refreshCatalog() }
+                })
             }
             .fileImporter(
                 isPresented: $showFileImporter,
@@ -502,72 +508,33 @@ struct SegmentRowView: View {
 struct SupabaseAuthSheet: View {
     @StateObject private var client = SupabaseClient.shared
     @Environment(\.dismiss) private var dismiss
+    var onSuccess: (() -> Void)?
 
     @State private var email: String = ""
-    @State private var otpCode: String = ""
-    @State private var otpSent: Bool = false
+    @State private var password: String = ""
     @State private var statusMessage: String?
     @State private var isError: Bool = false
+    @State private var isSigningIn: Bool = false
+    @State private var isSigningUp: Bool = false
+
+    init(onSuccess: (() -> Void)? = nil) {
+        self.onSuccess = onSuccess
+    }
+
+    private var isFormValid: Bool {
+        !email.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && password.count >= 8
+    }
 
     var body: some View {
         NavigationStack {
             Form {
-                if let user = client.currentSession?.user {
-                    Section("Signed In") {
-                        LabeledContent("User ID", value: user.id)
-                        if let userEmail = user.email {
-                            LabeledContent("Email", value: userEmail)
-                        }
-                        Button("Sign Out", role: .destructive) {
-                            client.signOut()
-                            statusMessage = "Signed out."
-                        }
-                    }
+                if client.currentSession?.user != nil {
+                    signedInSection
                 } else {
-                    Section("Email Magic OTP Login") {
-                        TextField("Learner email address", text: $email)
-                            .keyboardType(.emailAddress)
-                            .textInputAutocapitalization(.never)
-                            .autocorrectionDisabled()
-
-                        Button {
-                            Task { await sendOTP() }
-                        } label: {
-                            if client.isBusy && !otpSent {
-                                ProgressView()
-                            } else {
-                                Text(otpSent ? "Resend 6-Digit Code" : "Send OTP Code")
-                            }
-                        }
-                        .disabled(email.isEmpty || client.isBusy)
-                    }
-
-                    if otpSent {
-                        Section("Verify Code") {
-                            TextField("6-digit code", text: $otpCode)
-                                .keyboardType(.numberPad)
-
-                            Button {
-                                Task { await verifyOTP() }
-                            } label: {
-                                if client.isBusy {
-                                    ProgressView()
-                                } else {
-                                    Text("Verify & Sign In")
-                                }
-                            }
-                            .disabled(otpCode.count < 6 || client.isBusy)
-                        }
-                    }
+                    credentialsSection
+                    actionsSection
                 }
-
-                if let message = statusMessage {
-                    Section {
-                        Text(message)
-                            .font(.caption)
-                            .foregroundStyle(isError ? .red : .green)
-                    }
-                }
+                statusSection
             }
             .navigationTitle("Supabase Account")
             .navigationBarTitleDisplayMode(.inline)
@@ -581,25 +548,117 @@ struct SupabaseAuthSheet: View {
         }
     }
 
-    private func sendOTP() async {
+    @ViewBuilder
+    private var signedInSection: some View {
+        if let user = client.currentSession?.user {
+            Section("Signed In") {
+                LabeledContent("User ID", value: user.id)
+                if let userEmail = user.email {
+                    LabeledContent("Email", value: userEmail)
+                }
+                Button("Sign Out", role: .destructive) {
+                    client.signOut()
+                    statusMessage = "Signed out."
+                    isError = false
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var credentialsSection: some View {
+        Section("Email & Password Login") {
+            TextField("Learner email address", text: $email)
+                .keyboardType(.emailAddress)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+                .disabled(client.isBusy)
+
+            SecureField("Password (min 8 characters)", text: $password)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+                .disabled(client.isBusy)
+        }
+    }
+
+    @ViewBuilder
+    private var actionsSection: some View {
+        Section {
+            Button {
+                Task { await handleSignIn() }
+            } label: {
+                if isSigningIn {
+                    ProgressView()
+                } else {
+                    Text("Sign In")
+                }
+            }
+            .disabled(!isFormValid || client.isBusy)
+
+            Button {
+                Task { await handleSignUp() }
+            } label: {
+                if isSigningUp {
+                    ProgressView()
+                } else {
+                    Text("Create Account")
+                }
+            }
+            .disabled(!isFormValid || client.isBusy)
+        } footer: {
+            if !password.isEmpty && password.count < 8 {
+                Text("Password must be at least 8 characters.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var statusSection: some View {
+        if let message = statusMessage {
+            Section {
+                Text(message)
+                    .font(.caption)
+                    .foregroundStyle(isError ? .red : .green)
+            }
+        }
+    }
+
+    private func handleSignIn() async {
+        guard password.count >= 8 else {
+            isError = true
+            statusMessage = "Password must be at least 8 characters."
+            return
+        }
         statusMessage = nil
+        isSigningIn = true
+        defer { isSigningIn = false }
         do {
-            try await client.sendEmailOTP(email: email)
-            otpSent = true
+            _ = try await client.signInWithPassword(email: email, password: password)
             isError = false
-            statusMessage = "OTP code sent to \(email)."
+            statusMessage = "Signed in successfully!"
+            onSuccess?()
         } catch {
             isError = true
             statusMessage = error.localizedDescription
         }
     }
 
-    private func verifyOTP() async {
+    private func handleSignUp() async {
+        guard password.count >= 8 else {
+            isError = true
+            statusMessage = "Password must be at least 8 characters."
+            return
+        }
         statusMessage = nil
+        isSigningUp = true
+        defer { isSigningUp = false }
         do {
-            _ = try await client.verifyEmailOTP(email: email, token: otpCode)
+            _ = try await client.signUp(email: email, password: password)
             isError = false
-            statusMessage = "Successfully verified and signed in!"
+            statusMessage = "Account created and signed in!"
+            onSuccess?()
         } catch {
             isError = true
             statusMessage = error.localizedDescription
