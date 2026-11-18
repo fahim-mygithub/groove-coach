@@ -1,0 +1,3 @@
+{
+  "_comment": "Any key set here overrides the app's default CalibrationTuning value. Keys are the Swift property names in ios/GrooveCore/Sources/GrooveCore/CalibrationTuning.swift. Edits apply live; the phone polls this file every ~2 s."
+}
