@@ -1,0 +1,347 @@
+{
+  "source": {
+    "url": "https://youtube.com/watch?v=local-img4941",
+    "title": "Filmi Routine 1",
+    "channel": "Groove Coach Internal",
+    "duration_s": 16.33
+  },
+  "style": "Bollywood / Desi Pop Filmi Choreography",
+  "bpm": 112.5,
+  "first_downbeat_s": 0.53,
+  "beats_per_phrase": 8,
+  "dancers": [
+    {
+      "id": "dancer_1",
+      "description": "Female dancer in charcoal athletic top and skirt with white sneakers",
+      "bbox_px": [
+        {
+          "t_s": 0.53,
+          "x": 170,
+          "y": 110,
+          "w": 310,
+          "h": 920
+        },
+        {
+          "t_s": 7.00,
+          "x": 170,
+          "y": 110,
+          "w": 310,
+          "h": 920
+        },
+        {
+          "t_s": 14.00,
+          "x": 170,
+          "y": 110,
+          "w": 310,
+          "h": 920
+        }
+      ]
+    }
+  ],
+  "target_dancer_id": "dancer_1",
+  "shots": [
+    {
+      "start_s": 0.0,
+      "end_s": 0.53,
+      "camera": "moving",
+      "usable": false,
+      "why": "Pre-roll camera raise and settling"
+    },
+    {
+      "start_s": 0.53,
+      "end_s": 14.93,
+      "camera": "static",
+      "usable": true,
+      "why": "Full body visible, stable camera framing active choreography"
+    },
+    {
+      "start_s": 14.93,
+      "end_s": 16.33,
+      "camera": "moving",
+      "usable": false,
+      "why": "Post-routine camera tilt and recording cutoff"
+    }
+  ],
+  "cut_plan": [
+    {
+      "src_start_s": 0.53,
+      "src_end_s": 14.93
+    }
+  ],
+  "crop": {
+    "x": 0,
+    "y": 0,
+    "w": 720,
+    "h": 1280
+  },
+  "flip": false,
+  "mirrored": false,
+  "moves": [
+    {
+      "name": "Right Ear Flick & Left Hip Pops",
+      "start_s": 0.53,
+      "end_s": 2.67,
+      "counts": "1-4",
+      "lead_parts": [
+        "hips",
+        "feet",
+        "arms",
+        "hands"
+      ],
+      "difficulty": 2,
+      "description": "Left hand on hip while right hand flickers near ear; left hip/knee pops 4 times."
+    },
+    {
+      "name": "Mirror Switch Left Ear Sweep",
+      "start_s": 2.67,
+      "end_s": 3.73,
+      "counts": "5-6",
+      "lead_parts": [
+        "arms",
+        "hips"
+      ],
+      "difficulty": 1,
+      "description": "Right hand to hip, left hand behind ear with hip sways."
+    },
+    {
+      "name": "Step-In & Chest Gather",
+      "start_s": 3.73,
+      "end_s": 4.80,
+      "counts": "7-8",
+      "lead_parts": [
+        "feet",
+        "arms"
+      ],
+      "difficulty": 1,
+      "description": "Right foot steps in; arms pull inward across chest."
+    },
+    {
+      "name": "Face Namaste Peek-a-Boo",
+      "start_s": 4.80,
+      "end_s": 5.87,
+      "counts": "1-2",
+      "lead_parts": [
+        "hands",
+        "arms"
+      ],
+      "difficulty": 2,
+      "description": "Hands press together in prayer directly in front of face, shifting across."
+    },
+    {
+      "name": "Horizontal Cross-Chest Wave",
+      "start_s": 5.87,
+      "end_s": 6.40,
+      "counts": "3-4",
+      "lead_parts": [
+        "arms"
+      ],
+      "difficulty": 2,
+      "description": "Forearms sweep horizontally across chest to the left."
+    },
+    {
+      "name": "Diagonal Wrist Churn & Thumka Bounce",
+      "start_s": 6.40,
+      "end_s": 9.07,
+      "counts": "5-8",
+      "lead_parts": [
+        "arms",
+        "hands",
+        "hips",
+        "feet"
+      ],
+      "difficulty": 4,
+      "description": "Hands churn in tight diagonal loop near left shoulder with 4 left-heel hip bounces."
+    },
+    {
+      "name": "Waist Reset & Torso Rise",
+      "start_s": 9.07,
+      "end_s": 10.67,
+      "counts": "1-3",
+      "lead_parts": [
+        "hips",
+        "arms"
+      ],
+      "difficulty": 1,
+      "description": "Dancer centers, hands drop loosely to waist then float up."
+    },
+    {
+      "name": "Collarbone Shoulder Shimmy",
+      "start_s": 10.67,
+      "end_s": 11.73,
+      "counts": "4-5",
+      "lead_parts": [
+        "arms",
+        "torso"
+      ],
+      "difficulty": 3,
+      "description": "Elbows wing out, fingertips near collarbone, rapid shoulder shimmy."
+    },
+    {
+      "name": "Face Frame to Overhead Crown Clasp",
+      "start_s": 11.73,
+      "end_s": 13.60,
+      "counts": "6-8",
+      "lead_parts": [
+        "arms",
+        "hands"
+      ],
+      "difficulty": 2,
+      "description": "Hands trace face up to overhead Namaste crown clasp."
+    },
+    {
+      "name": "Open-Palm Present & Drop",
+      "start_s": 13.60,
+      "end_s": 14.93,
+      "counts": "1-4",
+      "lead_parts": [
+        "arms",
+        "hands"
+      ],
+      "difficulty": 1,
+      "description": "Hands release from overhead clasp, opening palms forward then drop to rest."
+    }
+  ],
+  "segments": [
+    {
+      "id": "A",
+      "title": "The Attitude Intro",
+      "start_s": 0.53,
+      "end_s": 4.80,
+      "moves": [
+        "Right Ear Flick & Left Hip Pops",
+        "Mirror Switch Left Ear Sweep",
+        "Step-In & Chest Gather"
+      ],
+      "difficulty": 2,
+      "focus": [
+        "arms",
+        "hands",
+        "hips",
+        "feet"
+      ],
+      "cues": [
+        "Right hand flicks by the right ear on 1-2-3-4",
+        "Left hip and knee pop out with each flick",
+        "Switch hands on 5-6, gather to the chest on 7-8"
+      ]
+    },
+    {
+      "id": "B",
+      "title": "Peek-a-Boo to Lateral Sweep",
+      "start_s": 4.80,
+      "end_s": 6.40,
+      "moves": [
+        "Face Namaste Peek-a-Boo",
+        "Horizontal Cross-Chest Wave"
+      ],
+      "difficulty": 2,
+      "focus": [
+        "arms",
+        "hands"
+      ],
+      "cues": [
+        "Palms together over the nose on 1",
+        "Forearms fold and sweep across the chest to your left on 3"
+      ]
+    },
+    {
+      "id": "C",
+      "title": "The Hook Groove",
+      "start_s": 6.40,
+      "end_s": 9.07,
+      "moves": [
+        "Diagonal Wrist Churn & Thumka Bounce"
+      ],
+      "difficulty": 4,
+      "focus": [
+        "arms",
+        "hips",
+        "feet"
+      ],
+      "cues": [
+        "Heel-hip bounce on 5-6-7-8",
+        "Wrists roll by the left shoulder"
+      ],
+      "config_overrides": {
+        "scoring_thresholds": {
+          "gate": {
+            "timing_source": "hits"
+          }
+        }
+      }
+    },
+    {
+      "id": "D",
+      "title": "Shimmy, Crown Lotus and Finale",
+      "start_s": 9.07,
+      "end_s": 14.93,
+      "moves": [
+        "Waist Reset & Torso Rise",
+        "Collarbone Shoulder Shimmy",
+        "Face Frame to Overhead Crown Clasp",
+        "Open-Palm Present & Drop"
+      ],
+      "difficulty": 2,
+      "focus": [
+        "arms",
+        "hands",
+        "torso"
+      ],
+      "cues": [
+        "Shoulder shimmy at the collarbone",
+        "Hands trace the face and meet overhead on 8",
+        "Open palms forward, then drop to rest"
+      ]
+    },
+    {
+      "id": "full",
+      "kind": "full_run",
+      "title": "Full Routine",
+      "start_s": 0.53,
+      "end_s": 14.93,
+      "moves": [
+        "Right Ear Flick & Left Hip Pops",
+        "Diagonal Wrist Churn & Thumka Bounce",
+        "Shimmy, Crown Lotus and Finale"
+      ],
+      "difficulty": 3,
+      "focus": [
+        "arms",
+        "hands",
+        "hips",
+        "feet"
+      ],
+      "cues": [
+        "A, B, C, D without stopping"
+      ]
+    }
+  ],
+  "teach_order": [
+    "C",
+    "A",
+    "B",
+    "D",
+    "full"
+  ],
+  "occlusion_windows": [
+    {
+      "start_s": 4.80,
+      "end_s": 5.87,
+      "kind": "clasp",
+      "joints": [
+        "leftWrist",
+        "rightWrist"
+      ]
+    },
+    {
+      "start_s": 12.75,
+      "end_s": 13.65,
+      "kind": "clasp",
+      "joints": [
+        "leftWrist",
+        "rightWrist"
+      ]
+    }
+  ],
+  "capture_notes": "Full body visible in portrait 720x1280. Non-mirrored perspective. Minimal handheld drift. Gym lighting with wall mirror behind screen-right."
+}

@@ -12,6 +12,21 @@ targets:
     platform: iOS
     sources:
       - Sources
+      # MediaPipe Pose Landmarker model; fetched (sha256-pinned) by Resources/fetch_pose_model.sh, not committed.
+      - path: Resources/pose_landmarker_full.task
+        optional: true
+        buildPhase: resources
+      # MediaPipe Hand Landmarker model; fetched (sha256-pinned) by Resources/fetch_pose_model.sh, not committed.
+      - path: Resources/hand_landmarker.task
+        optional: true
+        buildPhase: resources
+      # Scoring thresholds shared with groove_eval + the Swift parity gate (loaded by GrooveLibrary).
+      - path: ../../config/groove_config.json
+        buildPhase: resources
+    settings:
+      base:
+        # CocoaPods' generated script phases are not sandbox-aware.
+        ENABLE_USER_SCRIPT_SANDBOXING: "NO"
     dependencies:
       - package: GrooveCore
         product: GrooveCore
@@ -19,9 +34,12 @@ targets:
       path: Info.plist
       properties:
         CFBundleDisplayName: Groove Coach
-        NSCameraUsageDescription: "Groove Coach uses the full-body camera to track 3D pose and footwork timing."
+        # Public client config (publishable anon key; RLS protects the data). Private lesson server.
+        SUPABASE_URL: "https://aqmpiqkbxuqibgvwwlku.supabase.co"
+        SUPABASE_ANON_KEY: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImFxbXBpcWtieHVxaWJndnd3bGt1Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTM0NjcwNTIsImV4cCI6MjEwOTA0MzA1Mn0.ue2p01BlBVXF7E_5iiGwx0KFI2ccxMSeAbWxbXjJ64o"
+        NSCameraUsageDescription: "Groove Coach uses the camera to track your full-body 3D pose, footwork and hand shapes, and to recognise hands-free gestures (swipe, clap, hands up) while you practice."
         NSMotionUsageDescription: "Groove Coach reads the phone's gravity tilt angle so a leaning phone on the floor does not distort joint angles."
-        NSPhotoLibraryUsageDescription: "Import reference dance videos or recorded golden clips to extract unified Vision 3D + foot pose JSON."
+        NSPhotoLibraryUsageDescription: "Import reference dance videos or recorded golden clips to extract MediaPipe pose JSON."
         UILaunchScreen: {}
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait

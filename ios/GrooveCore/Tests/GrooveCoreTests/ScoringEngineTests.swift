@@ -85,4 +85,105 @@ final class ScoringEngineTests: XCTestCase {
         XCTAssertEqual(footCov, 0.0, accuracy: 1e-6)
         XCTAssertEqual(totalCov, 0.0, accuracy: 1e-6)
     }
+
+    // MARK: - Config overrides and the spec 3.2 keys (mirror of TestLessonScoringKeys in tests/test_scoring.py)
+
+    func testDeepMergeReplacesLeavesAndMergesObjects() throws {
+        let base = try LessonFixtures.json(#"{"a": {"b": 1, "c": {"d": 2}}, "e": [1, 2], "f": 3}"#)
+        let override = try LessonFixtures.json(#"{"a": {"c": {"d": 5, "g": 6}}, "e": [9], "f": {"h": 1}}"#)
+        let want = try LessonFixtures.json(#"{"a": {"b": 1, "c": {"d": 5, "g": 6}}, "e": [9], "f": {"h": 1}}"#)
+        XCTAssertEqual(GrooveScoringEngine.deepMerge(base, override), want)
+        XCTAssertEqual(try LessonFixtures.json(#"[true, 0.45, 50, "x", null]"#),
+                       .array([.bool(true), .double(0.45), .int(50), .string("x"), .null]))
+    }
+
+    func testDecodeConfigMergesOverridesBeforeDecoding() throws {
+        let data = try LessonFixtures.get().configData
+        let plain = try GrooveScoringEngine.decodeConfig(data).scoring_thresholds
+        XCTAssertEqual(plain.shape.arm_weight, 0.0)
+        XCTAssertEqual(plain.gate.timing_source, "bounce")
+        XCTAssertEqual(plain.retarget?.enabled, false)
+        XCTAssertEqual(plain.tolerance?.velocity_scale, 0.0)
+        XCTAssertEqual(plain.tolerance?.velocity_max_factor, 3.0)
+        XCTAssertEqual(plain.tolerance?.occlusion.factor, 1.0)
+        XCTAssertEqual(plain.tolerance?.occlusion.mask, false)
+
+        let lesson = try LessonFixtures.json(#"{"scoring_thresholds": {"shape": {"arm_weight": 0.35}, "groove": {"pass_min_score": 0}}}"#)
+        let segment = try LessonFixtures.json(
+            #"{"scoring_thresholds": {"gate": {"timing_source": "hits"}, "shape": {"arm_weight": 0.5}, "tolerance": {"occlusion": {"factor": 2.5}}}}"#
+        )
+        let t = try GrooveScoringEngine.decodeConfig(data, overrides: [lesson, segment]).scoring_thresholds
+        XCTAssertEqual(t.shape.arm_weight, 0.5)
+        XCTAssertEqual(t.shape.pass_min_score, 70.0)
+        XCTAssertEqual(t.groove.pass_min_score, 0.0)
+        XCTAssertEqual(t.groove.min_knee_flex_ratio, 0.65)
+        XCTAssertEqual(t.gate.timing_source, "hits")
+        XCTAssertEqual(t.gate.speed_ladder_pct, [50, 75, 90, 100])
+        XCTAssertEqual(t.tolerance?.occlusion.factor, 2.5)
+        XCTAssertEqual(t.tolerance?.occlusion.min_confidence, 0.5)
+        XCTAssertEqual(t.hits?.window_s, 0.110)
+    }
+
+    func testTorsoFrameCancelsYaw() throws {
+        let pose: [String: [Double]] = [
+            "leftHip": [-0.1, 0.0, 0.0], "rightHip": [0.1, 0.0, 0.0], "centerShoulder": [0.0, 0.5, 0.0],
+            "leftShoulder": [-0.18, 0.5, 0.0], "leftElbow": [-0.46, 0.5, 0.0], "leftWrist": [-0.46, 0.76, 0.0]
+        ]
+        let c = cos(0.7)
+        let s = sin(0.7)
+        let yawed = pose.mapValues { v in [v[0] * c + v[2] * s, v[1], -v[0] * s + v[2] * c] }
+        let a = try XCTUnwrap(GrooveScoringEngine.torsoFrameArmVectors(pose))
+        let b = try XCTUnwrap(GrooveScoringEngine.torsoFrameArmVectors(yawed))
+        XCTAssertEqual(a.keys.sorted(), ["leftForearm", "leftUpperArm"])
+        for (bone, v) in a {
+            let w = try XCTUnwrap(b[bone])
+            XCTAssertEqual(v.x, w.x, accuracy: 1e-12)
+            XCTAssertEqual(v.y, w.y, accuracy: 1e-12)
+            XCTAssertEqual(v.z, w.z, accuracy: 1e-12)
+        }
+        let degenerate: [String: [Double]] = ["leftHip": [0, 0, 0], "rightHip": [0, 0, 0], "centerShoulder": [0, 1, 0]]
+        XCTAssertNil(GrooveScoringEngine.torsoFrameArmVectors(degenerate))
+    }
+
+    func testLessonClipsMatchExpectedLabels() throws {
+        let f = try LessonFixtures.get()
+        for clip in f.dataset.golden_clips {
+            XCTAssertEqual(try f.score(clip.clip_id).passed, clip.expected?.passed, clip.clip_id)
+        }
+    }
+
+    func testWrongArmDirectionSameElbowAngle() throws {
+        let f = try LessonFixtures.get()
+        let flat = try f.score("lesson_01_arm_gather_unweighted")
+        let weighted = try f.score("lesson_02_arm_gather_weighted")
+        let right = try f.score("lesson_03_arm_ear_flick_weighted")
+        XCTAssertTrue(flat.passed)
+        XCTAssertNil(flat.arm_error_deg)
+        XCTAssertFalse(weighted.passed)
+        XCTAssertGreaterThan(weighted.arm_error_deg ?? 0, 45.0)
+        XCTAssertEqual(weighted.worst_joints.first?.joint, "arms")
+        XCTAssertTrue(weighted.top_issue.hasPrefix("Shape error on arms"))
+        XCTAssertTrue(right.passed)
+        XCTAssertLessThan(right.arm_error_deg ?? 99, 5.0)
+        XCTAssertGreaterThanOrEqual(right.shape_score, 95.0)
+    }
+
+    func testArmOnlyHitsTimingSource() throws {
+        let f = try LessonFixtures.get()
+        let bounce = try f.score("lesson_04_arm_only_bounce_gate")
+        let hits = try f.score("lesson_05_arm_only_hits_gate")
+        let late = try f.score("lesson_06_arm_only_hits_late")
+        XCTAssertEqual(bounce.good_or_better_ratio, 0.0)
+        XCTAssertFalse(bounce.passed)
+        XCTAssertEqual(bounce.timing_source, "bounce")
+        XCTAssertFalse(bounce.timing_passed)
+        XCTAssertTrue(hits.passed)
+        XCTAssertEqual(hits.timing_source, "hits")
+        XCTAssertTrue(hits.timing_passed)
+        XCTAssertEqual(hits.hit_timing.on_beat_ratio, 1.0)
+        XCTAssertTrue(hits.top_issue.hasSuffix("of accents on the beat."))
+        XCTAssertFalse(late.passed)
+        XCTAssertFalse(late.timing_passed)
+        XCTAssertTrue(late.top_issue.hasPrefix("Hit timing off"))
+    }
 }

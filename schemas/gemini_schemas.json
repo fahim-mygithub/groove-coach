@@ -102,7 +102,10 @@
           }
         }
       },
-      "top_deterministic_issue": { "type": "string" }
+      "top_deterministic_issue": { "type": "string" },
+      "top_correction_hint": { "type": "string" },
+      "hit_score": { "type": "number" },
+      "hand_score": { "type": "number" }
     }
   },
   "post_set_critique_response": {

@@ -1,0 +1,9 @@
+# MediaPipe Tasks iOS ships officially via CocoaPods (static frameworks, linked into the app binary).
+# Run after `xcodegen generate`, then build GrooveCoach.xcworkspace.
+platform :ios, '17.0'
+
+project 'GrooveCoach.xcodeproj'
+
+target 'GrooveCoach' do
+  pod 'MediaPipeTasksVision', '1.0.0'
+end

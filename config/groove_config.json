@@ -47,6 +47,63 @@
     "gate": {
       "min_good_or_better_beat_ratio": 0.80,
       "speed_ladder_pct": [50, 75, 90, 100]
+    },
+    "smoothing": {
+      "enabled": true,
+      "min_cutoff": 1.2,
+      "beta": 3.0,
+      "d_cutoff": 1.0
+    },
+    "hits": {
+      "enabled": true,
+      "gate": false,
+      "pass_min_score": 60.0,
+      "window_s": 0.110,
+      "moving_threshold": 1.0,
+      "settle_threshold": 0.4,
+      "min_settle_s": 0.115,
+      "beat_tolerance_ms": 150.0,
+      "perfect_max_ms": 60.0,
+      "good_max_ms": 120.0
+    },
+    "joint_tolerance": {
+      "enabled": true,
+      "k": 2.0,
+      "position_floor": 0.06,
+      "position_ceiling": 0.30,
+      "angle_floor_deg": 8.0,
+      "angle_ceiling_deg": 45.0,
+      "warn_factor": 2.0
+    },
+    "hands": {
+      "enabled": true,
+      "gate": false,
+      "pass_min_score": 60.0
+    },
+    "retarget": {
+      "enabled": false
+    },
+    "tolerance": {
+      "velocity_scale": 0.0,
+      "velocity_max_factor": 3.0,
+      "velocity_half_window_s": 0.05,
+      "occlusion": {
+        "min_confidence": 0.5,
+        "wrist_distance": 0.0,
+        "factor": 1.0,
+        "mask": false
+      }
     }
+  },
+  "_notes": {
+    "spec 3.2 keys": "scoring_thresholds.shape.arm_weight (default 0) and scoring_thresholds.gate.timing_source (default \"bounce\") are not written above: absent means the default, and lesson / segment config_overrides set them (validated by lesson_package.NEW_CONFIG_KEYS). The other new sections (retarget, tolerance) are written out with their defaults.",
+    "scoring_thresholds.shape.arm_weight": "Default 0 (off). Share of the shape score given to the arms: the mean angle (deg) between learner and reference torso-frame unit bone vectors (both upper arms and forearms) at the -0.12/0/+0.12 s samples. The other shape weights are scaled by (1 - arm_weight). Range [0, 1].",
+    "scoring_thresholds.gate.timing_source": "Default \"bounce\". \"bounce\": the timing gate uses knee-bounce turnarounds (min_good_or_better_beat_ratio of beats Good or better). \"hits\": it uses the settle-after-move hits instead (on_beat_ratio >= min_good_or_better_beat_ratio; a reference without hits never fails), and bounce timing is informational.",
+    "scoring_thresholds.retarget.enabled": "Default false. Re-walk the reference (and golden takes) from root along CANONICAL_BONES with the teacher's unit bone directions and the learner's bone lengths: the median over the attempt's calibration_frames (a calibration stance) when given, else over the take. Joint angles are unchanged by it; joint positions are not.",
+    "scoring_thresholds.tolerance.velocity_scale": "Default 0 (off). alpha in s/rad: a joint verdict's tolerance on a beat is tau_base * min(velocity_max_factor, 1 + alpha * |omega_j(t)|), omega_j being the reference's angular velocity (rad/s) of the bone ending at joint j (positions) or of the joint angle (knees, elbows), from poses at t -/+ velocity_half_window_s.",
+    "scoring_thresholds.tolerance.velocity_max_factor": "Default 3.0. Upper clamp of the velocity tolerance factor.",
+    "scoring_thresholds.tolerance.velocity_half_window_s": "Default 0.05 s. Half-width of the central difference for omega_j.",
+    "scoring_thresholds.tolerance.occlusion": "A joint is occluded on a beat when its confidence in the nearest reference or learner frame is < min_confidence (default 0.5; a missing confidence counts as 1), and both wrists are when the wrists are closer than wrist_distance leg lengths in either pose (default 0 = off). An occluded joint's tolerance is multiplied by factor (default 1 = off), or with mask=true (default false) its beat is left out.",
+    "lesson windows": "Reference clips may carry the manifest windows (lesson_package.slice_reference / stretch): a window whose mask lists hand_shape drops the hand-styling samples inside it, and its tolerance_scale multiplies those joints' verdict tolerances on the beats inside it."
   }
 }
