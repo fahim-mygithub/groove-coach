@@ -9,6 +9,18 @@ struct LiveSkeleton {
     var imageAspect: Double
 }
 
+/// One live calibration sample, delivered on the camera analysis queue while calibration is active.
+struct CalibrationCameraSample {
+    /// Host-clock seconds of the camera frame.
+    let time: Double
+    /// The 33 MediaPipe points in raw (un-mirrored) normalised image coordinates; empty without a person.
+    let landmarks: [CalibrationLandmark]
+    /// The live canonical frame (nil without a person).
+    let frame: GrooveScoringEngine.RawPoseFrame?
+    /// The portrait 32BGRA camera buffer (valid for the duration of the callback; don't keep it).
+    let pixelBuffer: CVPixelBuffer
+}
+
 /// Front-camera capture for practice takes:
 /// - records takes to a movie file (scored afterwards with MediaPipe VIDEO mode via PoseProvider);
 /// - runs lightweight live MediaPipe PoseLandmarker (LIVE_STREAM mode) to drive the skeleton overlay
@@ -26,6 +38,10 @@ final class PracticeCamera: NSObject, ObservableObject, AVCaptureVideoDataOutput
     /// Delivered on the main queue when a gesture completes.
     var onGesture: ((GestureCommand) -> Void)?
 
+    /// The front camera, for exposure reads (`iso`, `activeFormat.maxISO`, `exposureDuration`). Set once when the
+    /// session is configured, before any frame is analysed.
+    private(set) var captureDevice: AVCaptureDevice?
+
     private static let minLiveJointConfidence: Float = 0.3
 
     private let provider: PoseProvider
@@ -41,6 +57,10 @@ final class PracticeCamera: NSObject, ObservableObject, AVCaptureVideoDataOutput
     // analysisQueue state
     private var recognizer = GestureRecognizer()
     private var lastPublish = 0.0
+    /// While set, gesture recognition is skipped (a T-pose raise looks like a swipe) and every analysed frame goes to
+    /// `onCalibrationSample`. Both are only touched on `analysisQueue`: use `startCalibration` / `stopCalibration`.
+    private var calibrationActive = false
+    private var onCalibrationSample: ((CalibrationCameraSample) -> Void)?
 
     /// Selfie preview is mirrored, so gesture directions and the overlay are mirrored to match what the dancer sees.
     private let mirrorForDisplay = true
@@ -59,10 +79,33 @@ final class PracticeCamera: NSObject, ObservableObject, AVCaptureVideoDataOutput
     }
 
     func stop() {
+        stopCalibration()
         videoQueue.async { [weak self] in
             self?.recorder?.cancel()
             self?.recorder = nil
             self?.session.stopRunning()
+        }
+    }
+
+    // MARK: - Calibration
+
+    /// Routes live frames to `handler` (called on the analysis queue) and pauses gesture recognition.
+    func startCalibration(_ handler: @escaping (CalibrationCameraSample) -> Void) {
+        analysisQueue.async { [weak self] in
+            self?.onCalibrationSample = handler
+            self?.calibrationActive = true
+        }
+    }
+
+    /// Back to normal: gestures on, no calibration callback. Safe to call on every exit path, any number of times.
+    func stopCalibration() {
+        analysisQueue.async { [weak self] in
+            guard let self else { return }
+            let wasActive = self.calibrationActive
+            self.calibrationActive = false
+            self.onCalibrationSample = nil
+            // Drop any half-finished gesture seen before calibration started.
+            if wasActive { self.recognizer = GestureRecognizer() }
         }
     }
 
@@ -108,6 +151,7 @@ final class PracticeCamera: NSObject, ObservableObject, AVCaptureVideoDataOutput
             return
         }
         session.addInput(input)
+        captureDevice = device
         output.videoSettings = [kCVPixelBufferPixelFormatTypeKey as String: Int(kCVPixelFormatType_32BGRA)]
         output.alwaysDiscardsLateVideoFrames = true
         output.setSampleBufferDelegate(self, queue: videoQueue)
@@ -153,7 +197,16 @@ final class PracticeCamera: NSObject, ObservableObject, AVCaptureVideoDataOutput
         guard let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
         let aspect = Double(CVPixelBufferGetWidth(pixelBuffer)) / Double(max(1, CVPixelBufferGetHeight(pixelBuffer)))
 
-        guard let frame = provider.live(sampleBuffer, hostTime: time) else { return }
+        let liveFrame = provider.live(sampleBuffer, hostTime: time)
+
+        if calibrationActive, let handler = onCalibrationSample {
+            // RAW (un-mirrored) coordinates: the gate phrases left/right for the mirrored preview itself.
+            let points = (provider as? MediaPipePoseProvider)?.latestCalibrationLandmarks ?? []
+            handler(CalibrationCameraSample(time: time, landmarks: points,
+                                            frame: points.isEmpty ? nil : liveFrame, pixelBuffer: pixelBuffer))
+        }
+
+        guard let frame = liveFrame else { return }
         let normLandmarks = (provider as? MediaPipePoseProvider)?.latestNormalizedLandmarks ?? [:]
 
         // Gestures: body-pose wrists (stable at dance distance) from MediaPipe landmarks
@@ -167,7 +220,7 @@ final class PracticeCamera: NSObject, ObservableObject, AVCaptureVideoDataOutput
         }
         let headY = normLandmarks["nose"].map { Double($0.y) }
         let sample = GestureSample(time: time, leftWrist: wrist("left"), rightWrist: wrist("right"), headY: headY)
-        if let command = recognizer.process(sample) {
+        if !calibrationActive, let command = recognizer.process(sample) {
             DispatchQueue.main.async { self.onGesture?(command) }
         }
 

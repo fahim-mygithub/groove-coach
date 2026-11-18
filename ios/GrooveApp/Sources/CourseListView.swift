@@ -15,6 +15,7 @@ public struct CourseListView: View {
 
     @State private var showFileImporter: Bool = false
     @State private var showAuthSheet: Bool = false
+    @State private var showDebugLink: Bool = false
     @State private var bannerMessage: String?
     @State private var isErrorMessage: Bool = false
 
@@ -109,6 +110,18 @@ public struct CourseListView: View {
                         Image(systemName: "arrow.clockwise")
                     }
                 }
+
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button {
+                        showDebugLink = true
+                    } label: {
+                        Image(systemName: "gearshape")
+                    }
+                    .accessibilityLabel("Debug Link settings")
+                }
+            }
+            .sheet(isPresented: $showDebugLink) {
+                DebugLinkSettingsView()
             }
             .sheet(isPresented: $showAuthSheet, onDismiss: {
                 if supabase.isAuthenticated {

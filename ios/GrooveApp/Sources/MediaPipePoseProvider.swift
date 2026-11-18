@@ -82,6 +82,7 @@ public final class MediaPipePoseProvider: NSObject, PoseProvider, @unchecked Sen
     private let liveLock = NSLock()
     private var latestLiveFrame: RawPoseFrame?
     private var _latestNormalizedLandmarks: [String: CGPoint] = [:]
+    private var _latestCalibrationLandmarks: [CalibrationLandmark] = []
     private var lastLiveTimestampMs: Int = -1
     private var livePendingSemaphore: DispatchSemaphore?
 
@@ -89,6 +90,15 @@ public final class MediaPipePoseProvider: NSObject, PoseProvider, @unchecked Sen
         liveLock.lock()
         defer { liveLock.unlock() }
         return _latestNormalizedLandmarks
+    }
+
+    /// All 33 points of the latest live result (normalised, un-mirrored, with visibility) for the calibration gate.
+    /// Empty when the latest live result found no person (unlike `latestNormalizedLandmarks`, which keeps the last
+    /// pose).
+    public var latestCalibrationLandmarks: [CalibrationLandmark] {
+        liveLock.lock()
+        defer { liveLock.unlock() }
+        return _latestCalibrationLandmarks
     }
 
     public override init() {
@@ -288,9 +298,13 @@ extension MediaPipePoseProvider: PoseLandmarkerLiveStreamDelegate {
                 for (name, idx) in CanonicalSkeleton.mediapipeIndex {
                     normDict[name] = CGPoint(x: Double(normalized[idx].x), y: Double(normalized[idx].y))
                 }
+                let calib = normalized.map {
+                    CalibrationLandmark(x: Double($0.x), y: Double($0.y), visibility: Double($0.visibility?.doubleValue ?? 0.0))
+                }
                 liveLock.lock()
                 self.latestLiveFrame = frame
                 self._latestNormalizedLandmarks = normDict
+                self._latestCalibrationLandmarks = calib
                 let sema = self.livePendingSemaphore
                 liveLock.unlock()
                 sema?.signal()
@@ -299,6 +313,10 @@ extension MediaPipePoseProvider: PoseLandmarkerLiveStreamDelegate {
         }
 
         liveLock.lock()
+        if result != nil && error == nil {
+            // A finished detection with no person: calibration must see the dancer leave.
+            self._latestCalibrationLandmarks = []
+        }
         let sema = self.livePendingSemaphore
         liveLock.unlock()
         sema?.signal()
