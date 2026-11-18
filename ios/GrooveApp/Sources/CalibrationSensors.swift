@@ -89,11 +89,21 @@ final class CalibrationSensors {
                 sum += luma((Double(i) + 0.5) / 10.0, (Double(j) + 0.5) / 10.0)
             }
         }
-        let border = [(0.05, 0.1), (0.95, 0.1), (0.05, 0.5), (0.95, 0.5), (0.5, 0.03)].map { luma($0.0, $0.1) }
-        let torsoLuma: Double? = torso.map { r in
-            [(0.3, 0.3), (0.7, 0.3), (0.5, 0.5), (0.3, 0.7), (0.7, 0.7)]
-                .map { luma(Double(r.minX) + $0.0 * Double(r.width), Double(r.minY) + $0.1 * Double(r.height)) }
-                .reduce(0, +) / 5.0
+        let borderPoints: [(Double, Double)] = [(0.05, 0.1), (0.95, 0.1), (0.05, 0.5), (0.95, 0.5), (0.5, 0.03)]
+        var borderSum = 0.0
+        for (bx, by) in borderPoints { borderSum += luma(bx, by) }
+
+        var torsoLuma: Double?
+        if let r = torso {
+            let x0 = Double(r.minX), y0 = Double(r.minY), rw = Double(r.width), rh = Double(r.height)
+            let torsoPoints: [(Double, Double)] = [(0.3, 0.3), (0.7, 0.3), (0.5, 0.5), (0.3, 0.7), (0.7, 0.7)]
+            var torsoSum = 0.0
+            for (fx, fy) in torsoPoints {
+                let nx: Double = x0 + fx * rw
+                let ny: Double = y0 + fy * rh
+                torsoSum += luma(nx, ny)
+            }
+            torsoLuma = torsoSum / Double(torsoPoints.count)
         }
 
         var iso = 0.0, maxISO = 0.0, exposure = 0.0
@@ -106,7 +116,7 @@ final class CalibrationSensors {
         return CalibrationLightSample(
             meanLuma: sum / 100.0,
             torsoLuma: torsoLuma,
-            borderLuma: border.reduce(0, +) / Double(border.count),
+            borderLuma: borderSum / Double(borderPoints.count),
             iso: iso,
             maxISO: maxISO,
             exposureSeconds: exposure
