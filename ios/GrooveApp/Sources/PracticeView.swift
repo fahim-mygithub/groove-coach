@@ -4,13 +4,14 @@ import GrooveCore
 import SwiftUI
 import UIKit
 
-/// Live practice loop: count-in clicks -> record a take -> score it against the selected reference move.
+/// Live practice loop: calibration (level, framing, T-pose; skippable) -> count-in clicks -> record a take -> score it
+/// against the selected reference move.
 /// Hands-free: swipe left = replay the drill, swipe right = next move, clap = pause / resume,
 /// both hands above the head = restart.
 @MainActor
 final class PracticeViewModel: ObservableObject {
     enum Phase: Equatable {
-        case idle, countIn, recording, analyzing, results, paused
+        case idle, calibrating, countIn, recording, analyzing, results, paused
     }
 
     @Published var phase: Phase = .idle
@@ -23,9 +24,12 @@ final class PracticeViewModel: ObservableObject {
     @Published var countInBeatsLeft = 0
 
     let camera = PracticeCamera()
+    /// Pre-take calibration; also owns this screen's motion stream (`currentGravity()`).
+    let calibration = CalibrationController(screen: "practice")
     weak var library: GrooveLibrary?
     private let metronome = Metronome()
-    private let motion = CMMotionManager()
+    /// Skip is remembered for the rest of this visit, so hands-free retakes go straight to the count-in (as before).
+    private var calibrationSkipped = false
     private var takeTask: Task<Void, Never>?
     private var toastTask: Task<Void, Never>?
     private var takeCounter = 0
@@ -43,10 +47,8 @@ final class PracticeViewModel: ObservableObject {
         if selectedMove.isEmpty || library.references[selectedMove] == nil {
             selectedMove = library.references.keys.sorted().first ?? ""
         }
-        if motion.isDeviceMotionAvailable && !motion.isDeviceMotionActive {
-            motion.deviceMotionUpdateInterval = 1.0 / 30.0
-            motion.startDeviceMotionUpdates()
-        }
+        calibrationSkipped = false
+        calibration.startSensors()
         Task {
             let granted = await AVCaptureDevice.requestAccess(for: .video)
             if granted {
@@ -60,13 +62,15 @@ final class PracticeViewModel: ObservableObject {
     func onDisappear() {
         UIApplication.shared.isIdleTimerDisabled = false
         abortTake(to: .idle)
+        calibration.stopSensors()
         camera.stop()
-        motion.stopDeviceMotionUpdates()
     }
 
     // MARK: - Gestures
 
     func handle(_ command: GestureCommand) {
+        // Gestures are paused by the camera while calibrating; ignore any that were already in flight.
+        guard phase != .calibrating else { return }
         guard phase != .analyzing else {
             showToast("Analyzing take…")
             return
@@ -120,10 +124,42 @@ final class PracticeViewModel: ObservableObject {
             status = "Import a reference clip in the Calibrate tab first."
             return
         }
+        guard !reference.beat_times.isEmpty else {
+            status = "Reference \(selectedMove) has no beats."
+            return
+        }
+        guard !calibrationSkipped else {
+            runTake(reference: reference, library: library, profile: nil)
+            return
+        }
+        phase = .calibrating
+        status = "Calibrating: follow the voice, or tap Skip."
+        calibration.begin(camera: camera) { [weak self] outcome in
+            guard let self, self.phase == .calibrating else { return }
+            if outcome.skipped {
+                self.calibrationSkipped = true
+                self.runTake(reference: reference, library: library, profile: nil)
+                return
+            }
+            self.status = outcome.resumed ? "Setup unchanged. Locked in!" : "Locked in!"
+            // Let "Locked in!" finish before the count-in clicks.
+            self.takeTask = Task { @MainActor [weak self] in
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
+                guard let self, !Task.isCancelled, self.phase == .calibrating else { return }
+                self.runTake(reference: reference, library: library, profile: outcome.profile)
+            }
+        }
+    }
+
+    /// Count-in, record and score one take. `profile` is the locked calibration (nil when skipped).
+    private func runTake(reference: GrooveScoringEngine.PoseClip, library: GrooveLibrary,
+                         profile: CalibrationProfile?) {
+        takeTask?.cancel()
+        takeTask = nil
         let period = 60.0 / reference.bpm
         let beats = reference.beat_times
         guard let firstBeat = beats.first, let lastBeat = beats.last else {
-            status = "Reference \(selectedMove) has no beats."
+            phase = .idle
             return
         }
         // Timeline: playback start -> 4 count-in clicks -> take time zero (T0) -> reference beat grid.
@@ -142,12 +178,15 @@ final class PracticeViewModel: ObservableObject {
             playbackStart = try metronome.start(clickTimes: clicks, accented: Set(0..<Self.countInBeats), duration: duration)
         } catch {
             camera.cancelRecording()
+            phase = .idle
             status = "Audio error: \(error.localizedDescription)"
             return
         }
         let timeZero = playbackStart + countIn
         let latencyMs = metronome.outputLatencyMs
-        let gravity = currentGravity()
+        // Locked gravity from calibration; the live reading when skipped (as before).
+        let gravity = profile?.gravity ?? currentGravity()
+        let calibrationFrames = profile?.frames
         let mirrored = mirrorTeacher
         let golden = library.goldenClips(for: reference.move_tag)
         let config = library.config
@@ -180,6 +219,7 @@ final class PracticeViewModel: ObservableObject {
             }
             let take = await Self.buildTake(
                 output: output, timeZero: timeZero, reference: reference, gravity: gravity,
+                calibrationFrames: calibrationFrames,
                 mirrored: mirrored, latencyMs: latencyMs, takeNumber: self.takeCounter
             )
             if Task.isCancelled { return }
@@ -192,6 +232,7 @@ final class PracticeViewModel: ObservableObject {
                 GrooveScoringEngine.scoreAttempt(attempt: take, reference: reference, config: config, goldenClips: golden)
             }.value
             if Task.isCancelled { return }
+            DebugLink.shared.sendEvent(kind: "take_end", fields: Self.takeSummary(scored, take: take))
             self.result = scored
             self.resultPose = Self.displayPose(take: take, at: firstBeat, mirrored: mirrored)
             self.phase = .results
@@ -202,6 +243,7 @@ final class PracticeViewModel: ObservableObject {
     func abortTake(to newPhase: Phase) {
         takeTask?.cancel()
         takeTask = nil
+        calibration.cancel()
         metronome.stop()
         if phase == .countIn || phase == .recording {
             camera.cancelRecording()
@@ -211,8 +253,26 @@ final class PracticeViewModel: ObservableObject {
     }
 
     private func currentGravity() -> [Double] {
-        guard let g = motion.deviceMotion?.gravity else { return [0.0, -1.0, 0.0] }
-        return [g.x, g.y, g.z]
+        calibration.currentGravity()
+    }
+
+    /// One Debug Link line per take end.
+    static func takeSummary(_ r: GrooveScoringEngine.AttemptScoreResult,
+                            take: GrooveScoringEngine.PoseClip) -> [String: Any] {
+        [
+            "clipId": r.clip_id,
+            "passed": r.passed,
+            "shapeScore": r.shape_score,
+            "grooveScore": r.groove_score,
+            "coverageRatio": r.coverage_ratio,
+            "meanOffsetMs": r.mean_offset_ms,
+            "goodOrBetterRatio": r.good_or_better_ratio,
+            "retargeted": r.retargeted,
+            "topIssue": r.top_issue,
+            "frames": take.frames.count,
+            "calibrationFrames": take.calibration_frames?.count ?? 0,
+            "gravity": take.gravity_vector ?? []
+        ]
     }
 
     private static func nanos(until hostSeconds: Double) -> UInt64 {
@@ -226,6 +286,7 @@ final class PracticeViewModel: ObservableObject {
         timeZero: Double,
         reference: GrooveScoringEngine.PoseClip,
         gravity: [Double],
+        calibrationFrames: [GrooveScoringEngine.RawPoseFrame]?,
         mirrored: Bool,
         latencyMs: Double,
         takeNumber: Int
@@ -250,7 +311,8 @@ final class PracticeViewModel: ObservableObject {
             audio_latency_ms: latencyMs,
             speed_pct: 100,
             expected: nil,
-            frames: retimed
+            frames: retimed,
+            calibration_frames: calibrationFrames
         )
     }
 
@@ -287,6 +349,10 @@ struct PracticeView: View {
                 ZStack(alignment: .top) {
                     CameraPreview(session: model.camera.session)
                     LiveOverlay(camera: model.camera, severities: JointSeverityMap.from(model.result?.joint_feedback))
+                    if model.phase == .calibrating {
+                        CalibrationOverlayView(controller: model.calibration,
+                                               imageAspect: model.camera.skeleton.imageAspect, compact: true)
+                    }
                     if let toast = model.toast {
                         GestureToast(text: toast).padding(.top, 12)
                     }
@@ -346,15 +412,17 @@ struct PracticeView: View {
             }
             HStack {
                 Button {
-                    if model.phase == .countIn || model.phase == .recording {
+                    if model.phase == .calibrating {
+                        model.abortTake(to: .idle)
+                        model.status = "Calibration cancelled. Clap or tap Start."
+                    } else if model.phase == .countIn || model.phase == .recording {
                         model.abortTake(to: .paused)
                         model.status = "Stopped. Clap or tap Start."
                     } else {
                         model.startTake()
                     }
                 } label: {
-                    Label(model.phase == .countIn || model.phase == .recording ? "Stop" : "Start take",
-                          systemImage: model.phase == .countIn || model.phase == .recording ? "stop.fill" : "record.circle")
+                    Label(primaryTitle, systemImage: primaryIcon)
                         .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(.borderedProminent)
@@ -366,6 +434,22 @@ struct PracticeView: View {
             Text("Hands-free: swipe ← replay · swipe → next move · clap pause/resume · both hands up restart")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
+        }
+    }
+
+    private var primaryTitle: String {
+        switch model.phase {
+        case .calibrating: return "Cancel"
+        case .countIn, .recording: return "Stop"
+        default: return "Start take"
+        }
+    }
+
+    private var primaryIcon: String {
+        switch model.phase {
+        case .calibrating: return "xmark"
+        case .countIn, .recording: return "stop.fill"
+        default: return "record.circle"
         }
     }
 }

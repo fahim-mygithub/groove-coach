@@ -8,6 +8,7 @@ import UIKit
 /// Player view for learning and practicing a lesson segment end to end (spec §2.4, §8 Q6):
 /// - Teacher AVPlayer with pitch-preserving algorithm (`audioTimePitchAlgorithm = .timeDomain`),
 /// - Starts takes with sample-accurate host-time synchronization using Metronome and `player.setRate(atHostTime:)`,
+/// - Pre-take calibration (level the phone, full body in frame, T-pose; skippable) before the count-in,
 /// - Front camera recording with live skeleton overlay during the take,
 /// - Post-take pose extraction via injected closure: `extractPoses: (URL) async throws -> [RawPoseFrame]`,
 /// - Reference slicing & stretching with GrooveCore `LessonPackage.sliceReference` and `stretch`,
@@ -112,8 +113,15 @@ public struct LessonPlayerView: View {
                 severities: JointSeverityMap.from(viewModel.latestScoreResult?.joint_feedback)
             )
 
-            // Picture-in-picture of teacher video
-            if viewModel.hasVideo {
+            if viewModel.phase == .calibrating {
+                CalibrationOverlayView(
+                    controller: viewModel.calibration,
+                    imageAspect: viewModel.camera.skeleton.imageAspect
+                )
+            }
+
+            // Picture-in-picture of teacher video (hidden while calibrating: the HUD needs the corner for Skip)
+            if viewModel.hasVideo && viewModel.phase != .calibrating {
                 PlayerLayerView(player: viewModel.player, isMirrored: viewModel.isMirrored)
                     .frame(width: 120, height: 190)
                     .clipShape(RoundedRectangle(cornerRadius: 12))
@@ -126,22 +134,24 @@ public struct LessonPlayerView: View {
             }
 
             // Recording badge
-            VStack {
-                HStack(spacing: 6) {
-                    Circle()
-                        .fill(Color.red)
-                        .frame(width: 10, height: 10)
-                    Text("REC")
-                        .font(.caption2.bold())
-                        .foregroundStyle(.white)
+            if viewModel.phase == .countIn || viewModel.phase == .recording {
+                VStack {
+                    HStack(spacing: 6) {
+                        Circle()
+                            .fill(Color.red)
+                            .frame(width: 10, height: 10)
+                        Text("REC")
+                            .font(.caption2.bold())
+                            .foregroundStyle(.white)
+                    }
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(Color.black.opacity(0.65), in: Capsule())
+                    .padding(12)
+                    Spacer()
                 }
-                .padding(.horizontal, 8)
-                .padding(.vertical, 4)
-                .background(Color.black.opacity(0.65), in: Capsule())
-                .padding(12)
-                Spacer()
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 
@@ -458,7 +468,7 @@ public struct LessonPlayerView: View {
 @MainActor
 final class LessonPlayerViewModel: ObservableObject {
     enum Phase: Equatable {
-        case idle, countIn, recording, analyzing, results
+        case idle, calibrating, countIn, recording, analyzing, results
     }
 
     @Published var phase: Phase = .idle
@@ -487,6 +497,8 @@ final class LessonPlayerViewModel: ObservableObject {
     let videoURL: URL?
     let player = AVPlayer()
     let camera = PracticeCamera()
+    /// Pre-take calibration; also owns this screen's motion stream (gravity for the take).
+    let calibration = CalibrationController(screen: "lesson")
     let extractPoses: @Sendable (URL) async throws -> [GrooveScoringEngine.RawPoseFrame]
 
     private let metronome = Metronome()
@@ -495,13 +507,18 @@ final class LessonPlayerViewModel: ObservableObject {
     private var takeExecutionTask: Task<Void, Never>?
     private var segmentBeats: [LessonPackage.Beat] = []
     private var takeCounter = 0
+    /// Skip is remembered for the rest of this visit (later takes go straight to the count-in).
+    private var calibrationSkipped = false
+    /// Calibration of the current take: frames (nil when skipped) and the gravity written on the take.
+    private var takeCalibrationFrames: [GrooveScoringEngine.RawPoseFrame]?
+    private var takeGravity: [Double]?
 
     var hasVideo: Bool {
         videoURL != nil && FileManager.default.fileExists(atPath: videoURL!.path)
     }
 
     var isTakingTake: Bool {
-        phase == .countIn || phase == .recording
+        phase == .calibrating || phase == .countIn || phase == .recording
     }
 
     var adaptiveStatusText: String {
@@ -559,11 +576,25 @@ final class LessonPlayerViewModel: ObservableObject {
 
     func onAppear() {
         UIApplication.shared.isIdleTimerDisabled = true
+        calibrationSkipped = false
+        // Camera and motion run for the whole visit so calibration can start the moment a take is requested.
+        calibration.startSensors()
+        Task { @MainActor [weak self] in
+            let granted = await AVCaptureDevice.requestAccess(for: .video)
+            guard let self else { return }
+            if granted {
+                self.camera.start()
+            } else {
+                self.statusMessage = "Camera access is off: enable it in Settings > Groove Coach."
+            }
+        }
         restartWithCountIn()
     }
 
     func onDisappear() {
         UIApplication.shared.isIdleTimerDisabled = false
+        if phase == .calibrating { phase = .idle }
+        calibration.stopSensors()
         stopPlayback()
         camera.stop()
     }
@@ -583,7 +614,7 @@ final class LessonPlayerViewModel: ObservableObject {
     // MARK: - Review Playback Flow
 
     func restartWithCountIn() {
-        guard hasVideo else { return }
+        guard hasVideo, phase != .calibrating else { return }
         stopPlayback()
 
         let countInBeats = max(1, manifest.practice.countInBeats)
@@ -656,8 +687,41 @@ final class LessonPlayerViewModel: ObservableObject {
     func startTake() {
         stopPlayback()
         takeExecutionTask?.cancel()
+        takeExecutionTask = nil
+        calibration.cancel()
+        camera.start()
+
+        guard !calibrationSkipped else {
+            beginTakeCountIn(profile: nil)
+            return
+        }
+        phase = .calibrating
+        statusMessage = "Calibrating: follow the voice, or tap Skip."
+        calibration.begin(camera: camera) { [weak self] outcome in
+            guard let self, self.phase == .calibrating else { return }
+            if outcome.skipped {
+                self.calibrationSkipped = true
+                self.beginTakeCountIn(profile: nil)
+                return
+            }
+            self.statusMessage = outcome.resumed ? "Setup unchanged. Locked in!" : "Locked in!"
+            // Let "Locked in!" finish before the count-in clicks.
+            self.takeExecutionTask = Task { @MainActor [weak self] in
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
+                guard let self, !Task.isCancelled, self.phase == .calibrating else { return }
+                self.beginTakeCountIn(profile: outcome.profile)
+            }
+        }
+    }
+
+    /// Count-in, record and score one take. `profile` is the locked calibration (nil when skipped).
+    private func beginTakeCountIn(profile: CalibrationProfile?) {
+        takeExecutionTask?.cancel()
+        takeExecutionTask = nil
         phase = .countIn
         statusMessage = "Starting take..."
+        takeCalibrationFrames = profile?.frames
+        takeGravity = profile?.gravity ?? calibration.currentGravity()
 
         // Check model compatibility guard (spec §2.2)
         let (canGrade, refusalReason) = AttemptExport.canGrade(manifest: manifest)
@@ -762,6 +826,7 @@ final class LessonPlayerViewModel: ObservableObject {
     func abortTake() {
         takeExecutionTask?.cancel()
         takeExecutionTask = nil
+        calibration.cancel()
         countInTask?.cancel()
         metronome.stop()
         camera.cancelRecording()
@@ -843,11 +908,12 @@ final class LessonPlayerViewModel: ObservableObject {
                 move_tag: segment.id,
                 bpm: stretched.bpm,
                 beat_times: stretched.beatTimes,
-                gravity_vector: [0.0, -1.0, 0.0],
+                gravity_vector: takeGravity ?? calibration.currentGravity(),
                 mirrored: scoringMirrored,
                 audio_latency_ms: metronome.outputLatencyMs,
                 speed_pct: Int((playbackRate * 100.0).rounded()),
-                frames: takeFrames
+                frames: takeFrames,
+                calibration_frames: takeCalibrationFrames
             )
 
             // Deep-merge config overrides: bundled config < lesson < segment
@@ -862,6 +928,12 @@ final class LessonPlayerViewModel: ObservableObject {
                 reference: refPoseClip,
                 config: scoringConfig
             )
+
+            var summary = PracticeViewModel.takeSummary(scoreResult, take: takePoseClip)
+            summary["lessonId"] = manifest.lessonID
+            summary["segmentId"] = segment.id
+            summary["rate"] = playbackRate
+            DebugLink.shared.sendEvent(kind: "take_end", fields: summary)
 
             self.latestScoreResult = scoreResult
             self.latestTakeClip = takePoseClip
@@ -977,7 +1049,7 @@ final class LessonPlayerViewModel: ObservableObject {
                 move_tag: segment.id,
                 bpm: refClip.bpm,
                 beat_times: refClip.beat_times,
-                gravity_vector: [0.0, -1.0, 0.0],
+                gravity_vector: takeGravity ?? calibration.currentGravity(),
                 mirrored: !isMirrored,
                 audio_latency_ms: metronome.outputLatencyMs,
                 speed_pct: Int((playbackRate * 100.0).rounded()),
