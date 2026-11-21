@@ -933,6 +933,7 @@ final class LessonPlayerViewModel: ObservableObject {
             summary["lessonId"] = manifest.lessonID
             summary["segmentId"] = segment.id
             summary["rate"] = playbackRate
+            DebugLog.info("take_end lesson \(manifest.lessonID) segment \(segment.id) rate \(playbackRate)")
             DebugLink.shared.sendEvent(kind: "take_end", fields: summary)
 
             self.latestScoreResult = scoreResult

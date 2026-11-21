@@ -40,8 +40,11 @@ targets:
         NSCameraUsageDescription: "Groove Coach uses the camera to track your full-body 3D pose, footwork and hand shapes, and to recognise hands-free gestures (swipe, clap, hands up) while you practice."
         NSMotionUsageDescription: "Groove Coach reads the phone's gravity tilt angle so a leaning phone on the floor does not distort joint angles."
         NSPhotoLibraryUsageDescription: "Import reference dance videos or recorded golden clips to extract MediaPipe pose JSON."
-        # Debug Link (off by default): plain http to the owner's PC on the LAN only.
-        NSLocalNetworkUsageDescription: "Groove Coach sends calibration readings to your computer when Debug Link is on."
+        # Debug Link (on by default in this build; Courses > gear to turn off): plain http to the owner's PC on the
+        # LAN only. The PC is found via Bonjour (NWBrowser) or a /24 /health probe; no multicast entitlement needed.
+        NSLocalNetworkUsageDescription: "Groove Coach finds your computer on this Wi-Fi and shares the screen, log and calibration readings with it while Debug Link is on."
+        NSBonjourServices:
+          - _groovedebug._tcp
         NSAppTransportSecurity:
           NSAllowsLocalNetworking: true
         UILaunchScreen: {}

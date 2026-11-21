@@ -148,6 +148,7 @@ final class PracticeCamera: NSObject, ObservableObject, AVCaptureVideoDataOutput
               session.canAddInput(input) else {
             session.commitConfiguration()
             publishError("Front camera unavailable.")
+            DebugLog.error("front camera unavailable")
             return
         }
         session.addInput(input)
@@ -158,6 +159,7 @@ final class PracticeCamera: NSObject, ObservableObject, AVCaptureVideoDataOutput
         guard session.canAddOutput(output) else {
             session.commitConfiguration()
             publishError("Camera output unavailable.")
+            DebugLog.error("camera output unavailable")
             return
         }
         session.addOutput(output)
@@ -183,6 +185,8 @@ final class PracticeCamera: NSObject, ObservableObject, AVCaptureVideoDataOutput
     func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer, from connection: AVCaptureConnection) {
         let time = hostSeconds(CMSampleBufferGetPresentationTimeStamp(sampleBuffer))
         recorder?.append(sampleBuffer, hostSeconds: time)
+        // Debug Link screen sharing: the latest camera frame for the preview composite (throttled inside).
+        if let pb = CMSampleBufferGetImageBuffer(sampleBuffer) { CameraFrameStore.shared.offer(pb) }
         guard !analysisBusy else { return }
         analysisBusy = true
         analysisQueue.async { [weak self] in

@@ -1,8 +1,8 @@
 import SwiftUI
 
-/// Courses > gear: turn the calibration Debug Link on, set the PC address and test it.
+/// Courses > gear: the Debug Link (on by default). The PC is found automatically; a typed address overrides that.
 struct DebugLinkSettingsView: View {
-    @AppStorage(DebugLinkSettings.enabledKey) private var enabled = false
+    @AppStorage(DebugLinkSettings.enabledKey) private var enabled = DebugLinkSettings.enabledByDefault
     @AppStorage(DebugLinkSettings.hostKey) private var host = ""
     @ObservedObject private var link = DebugLink.shared
     @Environment(\.dismiss) private var dismiss
@@ -17,16 +17,18 @@ struct DebugLinkSettingsView: View {
             Form {
                 Section {
                     Toggle("Debug Link", isOn: $enabled)
-                    TextField("192.168.4.47:8765", text: $host)
+                    TextField("automatic (or 192.168.4.47:8765)", text: $host)
                         .keyboardType(.URL)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                         .font(.body.monospaced())
                 } footer: {
-                    Text("Sends calibration readings and small camera pictures to `tools/debuglink/server.py` on your computer, and re-reads its tuning.json every 2 s. Same Wi-Fi only; plain http, no password. Off by default.")
+                    Text("Shares the screen (about 1 frame/s), the app log, events and crash reports with `tools/debuglink/start.ps1` on your computer, plus calibration readings and tuning. The computer is found automatically on the same Wi-Fi; leave the address empty unless that fails. Plain http, no password.")
                 }
 
                 Section("Connection") {
+                    LabeledContent("Server", value: link.serverDescription)
+                        .font(.footnote)
                     Button {
                         testing = true
                         testResult = nil
@@ -40,19 +42,22 @@ struct DebugLinkSettingsView: View {
                             if testing { Spacer(); ProgressView() }
                         }
                     }
-                    .disabled(testing || host.trimmingCharacters(in: .whitespaces).isEmpty)
+                    .disabled(testing || !enabled)
+
+                    Button("Find the computer again") {
+                        testResult = nil
+                        link.findAgain()
+                    }
+                    .disabled(!enabled || !host.trimmingCharacters(in: .whitespaces).isEmpty)
 
                     if let testResult {
                         Text(testResult).font(.footnote)
-                    }
-                    if let url = DebugLinkSettings.baseURL(from: host) {
-                        LabeledContent("Server", value: url.absoluteString)
-                            .font(.footnote)
                     }
                 }
 
                 Section("Status") {
                     LabeledContent("Connected", value: enabled && link.connected ? "yes" : "no")
+                    LabeledContent("Screen", value: link.currentScreen)
                     LabeledContent("Tuning", value: link.tuningHash.map { "tuning \($0)" } ?? "defaults")
                     Text(link.lastSent).font(.footnote).foregroundStyle(.secondary)
                     if let err = link.lastError {
