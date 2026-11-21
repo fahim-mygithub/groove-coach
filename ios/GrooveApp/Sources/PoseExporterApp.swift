@@ -10,14 +10,22 @@ struct GrooveCoachApp: App {
     @StateObject private var library = GrooveLibrary()
     @StateObject private var lessonStore = LessonStore.shared
 
+    init() {
+        // Debug Link: log/stdout capture, crash marker, server discovery and screen sharing (on by default).
+        DebugLink.shared.start()
+    }
+
     var body: some Scene {
         WindowGroup {
             TabView {
                 CourseListView()
+                    .debugScreen("Courses")
                     .tabItem { Label("Courses", systemImage: "play.rectangle.on.rectangle") }
                 PracticeView()
+                    .debugScreen("Practice")
                     .tabItem { Label("Practice", systemImage: "figure.dance") }
                 CalibrationOnboardingView()
+                    .debugScreen("Calibrate")
                     .tabItem { Label("Calibrate", systemImage: "slider.horizontal.3") }
             }
             .environmentObject(library)

@@ -82,6 +82,7 @@ public struct CourseListView: View {
                         ForEach(groupedCourses, id: \.slug) { course in
                             NavigationLink {
                                 CourseDetailView(course: course)
+                                    .debugScreen("CourseDetail")
                             } label: {
                                 CourseRowView(course: course)
                             }
@@ -122,6 +123,7 @@ public struct CourseListView: View {
             }
             .sheet(isPresented: $showDebugLink) {
                 DebugLinkSettingsView()
+                    .debugScreen("DebugLinkSettings")
             }
             .sheet(isPresented: $showAuthSheet, onDismiss: {
                 if supabase.isAuthenticated {
@@ -131,6 +133,7 @@ public struct CourseListView: View {
                 SupabaseAuthSheet(onSuccess: {
                     Task { await refreshCatalog() }
                 })
+                .debugScreen("SignIn")
             }
             .fileImporter(
                 isPresented: $showFileImporter,
@@ -249,6 +252,7 @@ struct CourseDetailView: View {
                 ForEach(course.items) { item in
                     NavigationLink {
                         LessonDetailView(item: item)
+                            .debugScreen("LessonDetail")
                     } label: {
                         LessonRowView(item: item)
                     }
@@ -390,6 +394,7 @@ struct LessonDetailView: View {
                 segment: segment,
                 videoURL: lessonStore.localVideoURL(for: manifest)
             )
+            .debugScreen("LessonPlayer")
         }
     }
 

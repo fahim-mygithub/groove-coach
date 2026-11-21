@@ -232,6 +232,7 @@ final class PracticeViewModel: ObservableObject {
                 GrooveScoringEngine.scoreAttempt(attempt: take, reference: reference, config: config, goldenClips: golden)
             }.value
             if Task.isCancelled { return }
+            DebugLog.info("take_end practice")
             DebugLink.shared.sendEvent(kind: "take_end", fields: Self.takeSummary(scored, take: take))
             self.result = scored
             self.resultPose = Self.displayPose(take: take, at: firstBeat, mirrored: mirrored)

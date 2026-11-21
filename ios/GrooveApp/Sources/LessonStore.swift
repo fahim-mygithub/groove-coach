@@ -179,7 +179,7 @@ public final class LessonStore: ObservableObject {
             let data = try encoder.encode(catalog)
             try data.write(to: catalogCacheURL, options: .atomic)
         } catch {
-            print("[LessonStore] Failed to save catalog cache: \(error)")
+            DebugLog.error("[LessonStore] Failed to save catalog cache: \(error)")
         }
     }
 
