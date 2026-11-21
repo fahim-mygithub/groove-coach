@@ -61,6 +61,9 @@ if ($missing.Count -eq 0) {
 }
 
 # --- Optional Bonjour dependency
+# Windows PowerShell 5.1 turns a native command's stderr into a terminating error under "Stop"; probes below
+# report through $LASTEXITCODE instead.
+$ErrorActionPreference = "Continue"
 if (-not $NoBonjour) {
     & $python @pyArgs -c "import zeroconf" 2>$null
     if ($LASTEXITCODE -ne 0) {
