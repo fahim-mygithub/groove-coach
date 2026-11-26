@@ -1,0 +1,280 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Groove Coach Calibration Research Report</title>
+<style>
+  :root {
+    --bg: #ffffff;
+    --surface: #f6f8fa;
+    --text: #1f2328;
+    --muted: #59636e;
+    --border: #d0d7de;
+    --accent: #0969da;
+    --quote-bg: #f6f8fa;
+    --quote-border: #0969da;
+    --dispute-bg: #fff8c5;
+    --dispute-border: #d4a72c;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0d1117;
+      --surface: #161b22;
+      --text: #e6edf3;
+      --muted: #8b949e;
+      --border: #30363d;
+      --accent: #58a6ff;
+      --quote-bg: #161b22;
+      --quote-border: #58a6ff;
+      --dispute-bg: #2a2110;
+      --dispute-border: #d29922;
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0;
+    padding: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    line-height: 1.55;
+    overflow-x: hidden;
+  }
+  main {
+    max-width: 900px;
+    margin: 0 auto;
+    padding: 24px 16px 48px;
+  }
+  h1, h2, h3 { line-height: 1.25; margin-top: 1.5em; margin-bottom: 0.5em; }
+  h1 { margin-top: 0; font-size: 1.6rem; }
+  h2 { font-size: 1.25rem; border-bottom: 1px solid var(--border); padding-bottom: 0.3em; }
+  a { color: var(--accent); word-break: break-word; }
+  .meta { color: var(--muted); font-size: 0.9rem; margin-bottom: 1rem; }
+  .table-wrap { overflow-x: auto; margin: 1rem 0; }
+  table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
+  th, td { border: 1px solid var(--border); padding: 8px 10px; text-align: left; vertical-align: top; }
+  th { background: var(--surface); }
+  blockquote {
+    margin: 0.75rem 0;
+    padding: 10px 14px;
+    background: var(--quote-bg);
+    border-left: 4px solid var(--quote-border);
+    border-radius: 4px;
+  }
+  blockquote footer {
+    margin-top: 6px;
+    font-size: 0.85rem;
+    color: var(--muted);
+  }
+  .dispute-box {
+    background: var(--dispute-bg);
+    border: 1px solid var(--dispute-border);
+    border-left: 4px solid var(--dispute-border);
+    border-radius: 4px;
+    padding: 12px 14px;
+    margin: 1rem 0;
+  }
+  code {
+    background: var(--surface);
+    padding: 2px 5px;
+    border-radius: 3px;
+    font-size: 0.88em;
+    word-break: break-word;
+  }
+</style>
+</head>
+<body>
+<main>
+  <h1>Groove Coach Calibration Research Report</h1>
+  <p class="meta"><strong>As of:</strong> 2026-11-26 &middot; <strong>Confidence:</strong> Medium-High</p>
+
+  <section id="answer">
+    <h2>Answer</h2>
+    <p>For Groove Coach (SwiftUI iOS 17+ dance-coaching app using MediaPipe 33-landmark pose + Apple Vision 3D on the front wide camera, tested on <code>iPhone18,2</code> / iOS 26 at 2–4 m dancing distance):</p>
+    <ol>
+      <li><strong>Depth &amp; Camera Choice (r1):</strong> Keep the <strong>front wide camera with no depth sensor — MediaPipe + Vision 3D (<code>VNDetectHumanBodyPose3DRequest</code>) only</strong> (weighted score <strong>4.08 / 5.0</strong>). It preserves live self-view UX, avoids front TrueDepth's &lt;1 m range limit and rear-camera switching, and leverages Vision 3D's metric 3D joint positions. Runner-up: <strong>depth only for metric scale and floor plane</strong> (<strong>4.00 / 5.0</strong>), which wins if cm-level floor-plane calibration is required and the user accepts a one-time rear-camera LiDAR scan before flipping to the front camera.</li>
+      <li><strong>Calibration Poses &amp; Open-Source Reference (r2):</strong> Use an <strong>easiest-first</strong> sequence modeled on <code>Chuyuyan/dance-trainer</code> (<code>src/pose/checkup.ts</code>): <strong>Rest</strong> (framing + legs in frame) &rarr; <strong>T-Pose</strong> (1–2 s / 30–60 frames for bone lengths + scale) &rarr; <strong>Overhead / Arms Up</strong> (headroom + up/down) &rarr; <strong>Asymmetric L/R</strong> (mirroring check) &rarr; <strong>Arms Forward</strong> (monocular Z-depth) &rarr; <strong>Squat / Plié</strong> (lower-body ROM) &rarr; <strong>Turned 45° / Profile</strong> (angle tolerance). Side reach, step L/R, knee lift, and arm circles lack empirical open-source benchmarks in the inspected repos.</li>
+      <li><strong>Camera Calibration APIs (r3):</strong> Read <code>AVCameraCalibrationData</code> (<code>intrinsicMatrix</code>, <code>intrinsicMatrixReferenceDimensions</code>, <code>lensDistortionLookupTable</code>, <code>inverseLensDistortionLookupTable</code>, <code>lensDistortionCenter</code>) from <code>AVCapturePhoto.cameraCalibrationData</code> or <code>AVDepthData.cameraCalibrationData</code> (not <code>CMSampleBuffer</code>). For per-frame video intrinsics on <code>AVCaptureVideoDataOutput</code>, enable <code>AVCaptureConnection.isCameraIntrinsicMatrixDeliveryEnabled</code> (after checking <code>isCameraIntrinsicMatrixDeliverySupported</code>) and read <code>kCMSampleBufferAttachmentKey_CameraIntrinsicMatrix</code>. Read horizontal FOV from <code>AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .front)?.activeFormat.videoFieldOfView</code>, and lock exposure/white balance via <code>ExposureMode.locked</code> / <code>setExposureModeCustom(duration:iso:completionHandler:)</code> and <code>WhiteBalanceMode.locked</code> / <code>setWhiteBalanceModeLocked(with:completionHandler:)</code> inside <code>lockForConfiguration()</code> / <code>unlockForConfiguration()</code>.</li>
+    </ol>
+  </section>
+
+  <section id="r1">
+    <h2>1. Depth &amp; Camera Options at 2–4 m (r1 &middot; decision-matrix)</h2>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Option</th>
+            <th>Accuracy @ 2–4 m (35%)</th>
+            <th>Camera-Switching Cost / UX (25%)</th>
+            <th>Fusion Complexity (20%)</th>
+            <th>Metric Scale &amp; Floor Plane Value (20%)</th>
+            <th>Weighted Total</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr><td><strong>(f) No depth, MediaPipe + Vision 3D only</strong></td><td>3.5</td><td>5.0</td><td>5.0</td><td>3.0</td><td><strong>4.08</strong></td></tr>
+          <tr><td><strong>(e) Depth only for metric scale &amp; floor plane</strong></td><td>4.5 (rear LiDAR) / 1.0 (front TrueDepth)</td><td>2.5</td><td>4.0</td><td>5.0</td><td><strong>4.00</strong></td></tr>
+          <tr><td><strong>(b) Rear LiDAR (<code>builtInLiDARDepthCamera</code> / <code>ARBodyTrackingConfiguration</code> + <code>sceneDepth</code>)</strong></td><td>4.5</td><td>1.0</td><td>2.5</td><td>5.0</td><td><strong>3.33</strong></td></tr>
+          <tr><td><strong>(c) Switching to the rear camera</strong></td><td>4.5</td><td>1.0</td><td>3.0</td><td>4.5</td><td><strong>3.28</strong></td></tr>
+          <tr><td><strong>(a) Front TrueDepth depth</strong></td><td>1.0</td><td>5.0</td><td>3.5</td><td>1.5</td><td><strong>2.60</strong></td></tr>
+          <tr><td><strong>(d) Fusing depth with MediaPipe</strong></td><td>3.0</td><td>2.0</td><td>1.0</td><td>3.5</td><td><strong>2.45</strong></td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <blockquote>
+      "A request that detects points on human bodies in 3D space, relative to the camera." / "This request generates a collection of VNHumanBodyPose3DObservation objects that describe the position of each body the request detects. If the system allows it, the request uses AVDepthData information to improve the accuracy."
+      <footer>r1 (decision-matrix) &middot; Tier 1 (single source) &middot; <a href="https://developer.apple.com/documentation/vision/vndetecthumanbodypose3drequest.md">VNDetectHumanBodyPose3DRequest</a></footer>
+    </blockquote>
+
+    <blockquote>
+      "A configuration that tracks human body poses, planar surfaces, and images using the rear-facing camera."
+      <footer>r1 (decision-matrix) &middot; Tier 1 (single source) &middot; <a href="https://developer.apple.com/documentation/arkit/arbodytrackingconfiguration.md">ARBodyTrackingConfiguration</a></footer>
+    </blockquote>
+
+    <blockquote>
+      "Data on the distance between a device’s rear camera and real-world objects in an AR experience." / "populate this value with ARDepthData captured by the LiDAR scanner."
+      <footer>r1 (decision-matrix) &middot; Tier 1 (single source) &middot; <a href="https://developer.apple.com/documentation/arkit/arframe/scenedepth.md">ARFrame.sceneDepth</a></footer>
+    </blockquote>
+
+    <blockquote>
+      "In peer-reviewed tests, iPhone LiDAR measured small objects to about ±1 cm and rooms with errors of a few centimeters." / "Max range up to 5 m" / "Static: points within 1 mm of their plane. Moving: about 1 cm on average. Best at 1 to 1.5 m from the target"
+      <footer>r1 (decision-matrix) &middot; Tier 2 (1 aggregated source citing 4 studies) &middot; <a href="https://getscannr.com/blog/how-accurate-is-iphone-lidar">How Accurate is iPhone LiDAR? (Scannr)</a></footer>
+    </blockquote>
+  </section>
+
+  <section id="r2">
+    <h2>2. Dance Calibration Poses &amp; Open-Source GitHub Survey (r2 &middot; breadth-then-cluster)</h2>
+    <p>Recommended easiest-first sequence (from <code>Chuyuyan/dance-trainer</code>, <code>src/pose/checkup.ts</code>): Rest &rarr; T-Pose (1–2 s / 30–60 frames) &rarr; Overhead / Arms Up &rarr; Asymmetric L/R &rarr; Arms Forward &rarr; Squat / Plié &rarr; Head Turn &rarr; Turned 45° / Profile.</p>
+
+    <blockquote>
+      "They run easiest first, so a failure part-way through localises the problem instead of just saying the thing is broken."
+      <footer>r2 (breadth-then-cluster) &middot; Tier 1 (single source) &middot; <a href="https://github.com/Chuyuyan/dance-trainer">Chuyuyan/dance-trainer (src/pose/checkup.ts)</a></footer>
+    </blockquote>
+
+    <blockquote>
+      "guard ARBodyTrackingConfiguration.isSupported else { ... }" / "let config3D = ARBodyTrackingConfiguration()"
+      <footer>r2 (breadth-then-cluster) &middot; Tier 1 (single source) &middot; <a href="https://github.com/Reality-Dev/BodyTracking">Reality-Dev/BodyTracking (Configuration.swift)</a></footer>
+    </blockquote>
+  </section>
+
+  <section id="r3">
+    <h2>3. Camera Calibration, FOV, Exposure &amp; White-Balance Lock (r3 &middot; source-of-truth)</h2>
+
+    <blockquote>
+      "Information about the camera characteristics used to capture images and depth data."
+      <footer>r3 (source-of-truth) &middot; Tier 1 (single source) &middot; <a href="https://developer.apple.com/tutorials/data/documentation/avfoundation/avcameracalibrationdata.json">AVCameraCalibrationData</a></footer>
+    </blockquote>
+
+    <blockquote>
+      "Calibration information for the camera device that captured the photo."
+      <footer>r3 (source-of-truth) &middot; Tier 1 (single source) &middot; <a href="https://developer.apple.com/tutorials/data/documentation/avfoundation/avcapturephoto/cameracalibrationdata.json">AVCapturePhoto.cameraCalibrationData</a></footer>
+    </blockquote>
+
+    <blockquote>
+      "A Boolean value that indicates whether the capture connection currently supports delivering camera intrinsics information."
+      <footer>r3 (source-of-truth) &middot; Tier 1 (single source) &middot; <a href="https://developer.apple.com/tutorials/data/documentation/avfoundation/avcaptureconnection/iscameraintrinsicmatrixdeliverysupported.json">AVCaptureConnection.isCameraIntrinsicMatrixDeliverySupported</a></footer>
+    </blockquote>
+
+    <blockquote>
+      "Indicates the format’s horizontal field of view in degrees." / "Returns zero if the format’s field of view is unknown."
+      <footer>r3 (source-of-truth) &middot; Tier 1 (single source) &middot; <a href="https://developer.apple.com/tutorials/data/documentation/avfoundation/avcapturedevice/format/videofieldofview.json">AVCaptureDevice.Format.videoFieldOfView</a></footer>
+    </blockquote>
+
+    <blockquote>
+      "A mode that locks exposure for the device."
+      <footer>r3 (source-of-truth) &middot; Tier 1 (single source) &middot; <a href="https://developer.apple.com/tutorials/data/documentation/avfoundation/avcapturedevice/exposuremode-swift.enum/locked.json">AVCaptureDevice.ExposureMode.locked</a></footer>
+    </blockquote>
+
+    <blockquote>
+      "Sets the exposure mode to a custom state, and locks exposure duration and ISO at explicit values."
+      <footer>r3 (source-of-truth) &middot; Tier 1 (single source) &middot; <a href="https://developer.apple.com/tutorials/data/documentation/avfoundation/avcapturedevice/setexposuremodecustom(duration:iso:completionhandler:).json">setExposureModeCustom(duration:iso:completionHandler:)</a></footer>
+    </blockquote>
+
+    <blockquote>
+      "A mode that locks the white balance state."
+      <footer>r3 (source-of-truth) &middot; Tier 1 (single source) &middot; <a href="https://developer.apple.com/tutorials/data/documentation/avfoundation/avcapturedevice/whitebalancemode-swift.enum/locked.json">AVCaptureDevice.WhiteBalanceMode.locked</a></footer>
+    </blockquote>
+
+    <blockquote>
+      "Sets the white balance to locked mode with the specified white balance gains."
+      <footer>r3 (source-of-truth) &middot; Tier 1 (single source) &middot; <a href="https://developer.apple.com/tutorials/data/documentation/avfoundation/avcapturedevice/setwhitebalancemodelocked(with:completionhandler:).json">setWhiteBalanceModeLocked(with:completionHandler:)</a></footer>
+    </blockquote>
+  </section>
+
+  <section id="disagreements">
+    <h2>4. Where the Researchers Disagree</h2>
+    <div class="dispute-box">
+      <p>No direct contradictions exist between r1, r2, and r3. However, r1 notes an internal decision trade-off between <strong>(f) No depth, MediaPipe + Vision 3D only</strong> (4.08) and <strong>(e) Depth only for metric scale &amp; floor plane</strong> (4.00): if monocular Vision 3D scale drifts significantly at 3–4 m for very tall or short dancers, or if cm-level floor-plane calibration is required, (e) with a one-time rear LiDAR scan would be more accurate. Settling this requires benchmarking Vision 3D metric scale accuracy at 2–4 m on <code>iPhone18,2</code> / iOS 26.</p>
+    </div>
+  </section>
+
+  <section id="gaps">
+    <h2>5. What We Could Not Find</h2>
+    <ul>
+      <li><strong>r1:</strong> Front TrueDepth exact max range on <code>iPhone18,2</code> / iOS 26 was not directly tested on device; <code>AVCaptureMultiCamSession</code> was not benchmarked for thermal/FPS impact alongside MediaPipe + Vision 3D.</li>
+      <li><strong>r2:</strong> No open-source repo inspected provided empirical hold-time or per-joint confidence benchmarks specifically for <strong>side reach, step L/R, knee lift, or arm circles</strong> in MediaPipe dance coaching.</li>
+      <li><strong>r3:</strong> On-device verification on physical <code>iPhone18,2</code> / iOS 26 was not run (session ran on Windows without Xcode); runtime support for <code>isCameraIntrinsicMatrixDeliverySupported</code> and non-zero <code>videoFieldOfView</code> must be checked on-device.</li>
+      <li><strong>Did not deliver:</strong> none.</li>
+    </ul>
+  </section>
+
+  <section id="sources">
+    <h2>6. Sources</h2>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>URL</th><th>Tier</th><th>Used For</th><th>Opened By</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><a href="https://developer.apple.com/documentation/vision/vndetecthumanbodypose3drequest.md">vndetecthumanbodypose3drequest.md</a></td><td>Tier 1</td><td><code>VNDetectHumanBodyPose3DRequest</code> availability &amp; <code>AVDepthData</code> usage</td><td>r1</td></tr>
+          <tr><td><a href="https://developer.apple.com/documentation/arkit/arbodytrackingconfiguration.md">arbodytrackingconfiguration.md</a></td><td>Tier 1</td><td>Rear-facing camera constraint</td><td>r1</td></tr>
+          <tr><td><a href="https://developer.apple.com/documentation/arkit/arframe/scenedepth.md">scenedepth.md</a></td><td>Tier 1</td><td>Rear-camera LiDAR constraint</td><td>r1</td></tr>
+          <tr><td><a href="https://getscannr.com/blog/how-accurate-is-iphone-lidar">how-accurate-is-iphone-lidar</a></td><td>Tier 2</td><td>iPhone LiDAR accuracy &amp; 5 m max range</td><td>r1</td></tr>
+          <tr><td><a href="https://github.com/Chuyuyan/dance-trainer">Chuyuyan/dance-trainer</a></td><td>Tier 1</td><td>MediaPipe dance checkup sequence &amp; framing thresholds</td><td>r2</td></tr>
+          <tr><td><a href="https://github.com/Reality-Dev/BodyTracking">Reality-Dev/BodyTracking</a></td><td>Tier 1</td><td>Swift ARKit/RealityKit body tracking</td><td>r2</td></tr>
+          <tr><td><a href="https://developer.apple.com/tutorials/data/documentation/avfoundation/avcameracalibrationdata.json">avcameracalibrationdata.json</a></td><td>Tier 1</td><td><code>AVCameraCalibrationData</code> properties</td><td>r3</td></tr>
+          <tr><td><a href="https://developer.apple.com/tutorials/data/documentation/avfoundation/avcapturephoto/cameracalibrationdata.json">cameracalibrationdata.json</a></td><td>Tier 1</td><td><code>AVCapturePhoto.cameraCalibrationData</code></td><td>r3</td></tr>
+          <tr><td><a href="https://developer.apple.com/tutorials/data/documentation/avfoundation/avcaptureconnection/iscameraintrinsicmatrixdeliverysupported.json">iscameraintrinsicmatrixdeliverysupported.json</a></td><td>Tier 1</td><td>Per-frame video intrinsics</td><td>r3</td></tr>
+          <tr><td><a href="https://developer.apple.com/tutorials/data/documentation/avfoundation/avcapturedevice/format/videofieldofview.json">videofieldofview.json</a></td><td>Tier 1</td><td>Horizontal FOV in degrees</td><td>r3</td></tr>
+          <tr><td><a href="https://developer.apple.com/tutorials/data/documentation/avfoundation/avcapturedevice/exposuremode-swift.enum/locked.json">exposuremode/locked.json</a></td><td>Tier 1</td><td><code>ExposureMode.locked</code></td><td>r3</td></tr>
+          <tr><td><a href="https://developer.apple.com/tutorials/data/documentation/avfoundation/avcapturedevice/setexposuremodecustom(duration:iso:completionhandler:).json">setexposuremodecustom.json</a></td><td>Tier 1</td><td>Custom/locked exposure API</td><td>r3</td></tr>
+          <tr><td><a href="https://developer.apple.com/tutorials/data/documentation/avfoundation/avcapturedevice/whitebalancemode-swift.enum/locked.json">whitebalancemode/locked.json</a></td><td>Tier 1</td><td><code>WhiteBalanceMode.locked</code></td><td>r3</td></tr>
+          <tr><td><a href="https://developer.apple.com/tutorials/data/documentation/avfoundation/avcapturedevice/setwhitebalancemodelocked(with:completionhandler:).json">setwhitebalancemodelocked.json</a></td><td>Tier 1</td><td>Locked white balance gains API</td><td>r3</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section id="method">
+    <h2>7. Method</h2>
+    <ul>
+      <li><strong>Routing:</strong> 3 order(s), styles <code>decision-matrix</code>, <code>breadth-then-cluster</code>, <code>source-of-truth</code>.</li>
+      <li><strong>Routing note:</strong> Run the phased <code>CalibrationGate</code> and <code>CalibrationTuning</code> plan with Debug Link test steps only after these return; it depends on the depth choice. Also, the owner cites <code>docs/research/2026-11-18-calibration-research.md</code>, but the listed reports show none, so confirm that file exists before the plan relies on it.</li>
+      <li><strong>Did not deliver:</strong> none.</li>
+    </ul>
+  </section>
+</main>
+
+<script type="application/json" id="claims">
+[
+  {"researcher":"r1","style":"decision-matrix","tier":"Tier 1","url":"https://developer.apple.com/documentation/vision/vndetecthumanbodypose3drequest.md","quote":"A request that detects points on human bodies in 3D space, relative to the camera."},
+  {"researcher":"r1","style":"decision-matrix","tier":"Tier 1","url":"https://developer.apple.com/documentation/arkit/arbodytrackingconfiguration.md","quote":"A configuration that tracks human body poses, planar surfaces, and images using the rear-facing camera."},
+  {"researcher":"r1","style":"decision-matrix","tier":"Tier 1","url":"https://developer.apple.com/documentation/arkit/arframe/scenedepth.md","quote":"Data on the distance between a device’s rear camera and real-world objects in an AR experience."},
+  {"researcher":"r1","style":"decision-matrix","tier":"Tier 2","url":"https://getscannr.com/blog/how-accurate-is-iphone-lidar","quote":"In peer-reviewed tests, iPhone LiDAR measured small objects to about ±1 cm and rooms with errors of a few centimeters."},
+  {"researcher":"r2","style":"breadth-then-cluster","tier":"Tier 1","url":"https://github.com/Chuyuyan/dance-trainer","quote":"They run easiest first, so a failure part-way through localises the problem instead of just saying the thing is broken."},
+  {"researcher":"r2","style":"breadth-then-cluster","tier":"Tier 1","url":"https://github.com/Reality-Dev/BodyTracking","quote":"guard ARBodyTrackingConfiguration.isSupported else { ... }"},
+  {"researcher":"r3","style":"source-of-truth","tier":"Tier 1","url":"https://developer.apple.com/tutorials/data/documentation/avfoundation/avcameracalibrationdata.json","quote":"Information about the camera characteristics used to capture images and depth data."},
+  {"researcher":"r3","style":"source-of-truth","tier":"Tier 1","url":"https://developer.apple.com/tutorials/data/documentation/avfoundation/avcapturephoto/cameracalibrationdata.json","quote":"Calibration information for the camera device that captured the photo."},
+  {"researcher":"r3","style":"source-of-truth","tier":"Tier 1","url":"https://developer.apple.com/tutorials/data/documentation/avfoundation/avcaptureconnection/iscameraintrinsicmatrixdeliverysupported.json","quote":"A Boolean value that indicates whether the capture connection currently supports delivering camera intrinsics information."},
+  {"researcher":"r3","style":"source-of-truth","tier":"Tier 1","url":"https://developer.apple.com/tutorials/data/documentation/avfoundation/avcapturedevice/format/videofieldofview.json","quote":"Indicates the format’s horizontal field of view in degrees."},
+  {"researcher":"r3","style":"source-of-truth","tier":"Tier 1","url":"https://developer.apple.com/tutorials/data/documentation/avfoundation/avcapturedevice/exposuremode-swift.enum/locked.json","quote":"A mode that locks exposure for the device."},
+  {"researcher":"r3","style":"source-of-truth","tier":"Tier 1","url":"https://developer.apple.com/tutorials/data/documentation/avfoundation/avcapturedevice/setexposuremodecustom(duration:iso:completionhandler:).json","quote":"Sets the exposure mode to a custom state, and locks exposure duration and ISO at explicit values."},
+  {"researcher":"r3","style":"source-of-truth","tier":"Tier 1","url":"https://developer.apple.com/tutorials/data/documentation/avfoundation/avcapturedevice/whitebalancemode-swift.enum/locked.json","quote":"A mode that locks the white balance state."},
+  {"researcher":"r3","style":"source-of-truth","tier":"Tier 1","url":"https://developer.apple.com/tutorials/data/documentation/avfoundation/avcapturedevice/setwhitebalancemodelocked(with:completionhandler:).json","quote":"Sets the white balance to locked mode with the specified white balance gains."}
+]
+</script>
+</body>
+</html>
