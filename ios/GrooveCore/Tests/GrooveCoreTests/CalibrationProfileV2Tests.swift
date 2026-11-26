@@ -407,8 +407,8 @@ final class CalibrationProfileV2Tests: XCTestCase {
         let intr = CalibrationIntrinsics.fromPinhole(
             fx: 959.6, fy: 959.6, cx: 360.0, cy: 640.0, width: 720, height: 1280
         )
-        XCTAssertEqual(intr.horizontalFoVDeg, 41.112, accuracy: 0.02)
-        XCTAssertEqual(intr.verticalFoVDeg, 67.380, accuracy: 0.02)
+        XCTAssertEqual(intr.horizontalFoVDeg, 41.127, accuracy: 0.02)
+        XCTAssertEqual(intr.verticalFoVDeg, 67.402, accuracy: 0.02)
         XCTAssertEqual(
             CalibrationIntrinsics.portraitHorizontalFoVDeg(fromVerticalFoVDeg: intr.verticalFoVDeg),
             intr.horizontalFoVDeg,
