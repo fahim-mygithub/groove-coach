@@ -78,11 +78,19 @@ extension GrooveScoringEngine {
             return samples.mapValues { median($0) }
         }
 
-        /// The learner's bone lengths in the reference's side labels: from `calibration_frames` when present and
-        /// non-empty, else from the take. A mirrored take's left/right labels are swapped, like `swapMirrored`.
+        /// The learner's bone lengths in the reference's side labels: when `attempt.calibration_v2?.boneLengthsM`
+        /// contains finite positive bone lengths, prefers those first (§8.1; called by `scoreAttempt` only when
+        /// `retarget.enabled == true`), falling back to `calibration_frames` when present and non-empty, else
+        /// `attempt.frames`. A mirrored take's left/right labels are swapped, like `swapMirrored`.
         public static func learnerBoneLengths(attempt: PoseClip) -> [String: Double] {
-            let calibration = attempt.calibration_frames ?? []
-            let lengths = medianBoneLengths(calibration.isEmpty ? attempt.frames : calibration)
+            let v2Lengths = (attempt.calibration_v2?.boneLengthsM ?? [:]).filter { $0.value.isFinite && $0.value > 0.0 }
+            let lengths: [String: Double]
+            if !v2Lengths.isEmpty {
+                lengths = v2Lengths
+            } else {
+                let calibration = attempt.calibration_frames ?? []
+                lengths = medianBoneLengths(calibration.isEmpty ? attempt.frames : calibration)
+            }
             guard attempt.mirrored ?? false else { return lengths }
             var swapped: [String: Double] = [:]
             for (name, value) in lengths {
@@ -154,7 +162,8 @@ extension GrooveScoringEngine {
                 expected: clip.expected,
                 frames: retargetFrames(clip.frames, lengths: lengths),
                 windows: clip.windows,
-                calibration_frames: clip.calibration_frames
+                calibration_frames: clip.calibration_frames,
+                calibration_v2: clip.calibration_v2
             )
         }
     }

@@ -251,6 +251,9 @@ public enum GrooveScoringEngine {
         public let windows: [ScoringWindow]?
         /// A learner calibration stance; `Retarget.learnerBoneLengths` prefers it to the take's own frames.
         public let calibration_frames: [RawPoseFrame]?
+        /// Optional Calibration v2 learner payload (`groove.calibration/2`, §8). When `nil`, scoring and retargeting
+        /// behave identically to v1.
+        public let calibration_v2: LearnerCalibrationV2?
 
         public init(
             clip_id: String,
@@ -264,7 +267,8 @@ public enum GrooveScoringEngine {
             expected: ExpectedLabel? = nil,
             frames: [RawPoseFrame],
             windows: [ScoringWindow]? = nil,
-            calibration_frames: [RawPoseFrame]? = nil
+            calibration_frames: [RawPoseFrame]? = nil,
+            calibration_v2: LearnerCalibrationV2? = nil
         ) {
             self.clip_id = clip_id
             self.move_tag = move_tag
@@ -278,6 +282,7 @@ public enum GrooveScoringEngine {
             self.frames = frames
             self.windows = windows
             self.calibration_frames = calibration_frames
+            self.calibration_v2 = calibration_v2
         }
     }
 
@@ -838,6 +843,25 @@ public enum GrooveScoringEngine {
             ("right_foot", "right_foot_pitch_deg", 0.5 * footWeight)
         ]
 
+        let calibV2 = attempt.calibration_v2
+        let trunkLeanBias: Double
+        if let rom = calibV2?.rom {
+            let refRestTrunkLean: Double
+            if let refRom = reference.calibration_v2?.rom {
+                refRestTrunkLean = refRom.trunkLeanBaselineDeg
+            } else if let refCalFrames = reference.calibration_frames, !refCalFrames.isEmpty {
+                let vals = refCalFrames.map {
+                    extractFrameFeatures(frame: $0, gravityVector: refGravity, mirror: false).trunk_lean_deg
+                }
+                refRestTrunkLean = Retarget.median(vals)
+            } else {
+                refRestTrunkLean = refFeatures.map { $0.trunk_lean_deg }.min() ?? 0.0
+            }
+            trunkLeanBias = min(5.0, max(-5.0, rom.trunkLeanBaselineDeg - refRestTrunkLean))
+        } else {
+            trunkLeanBias = 0.0
+        }
+
         var jointErrors: [String: [Double]] = [:]
         for (name, _, _) in jointKeys { jointErrors[name] = [] }
         var lateralErrors: [Double] = []
@@ -852,7 +876,13 @@ public enum GrooveScoringEngine {
                 for (jointName, featKey, _) in jointKeys {
                     let vRef = interpolateFeature(features: refFeatures, tQuery: tRef, key: featKey)
                     let vUsr = interpolateFeature(features: userFeatures, tQuery: tUsr, key: featKey)
-                    jointErrors[jointName, default: []].append(abs(vUsr - vRef))
+                    let err: Double
+                    if featKey == "trunk_lean_deg", calibV2?.rom != nil {
+                        err = abs((vUsr - vRef) - trunkLeanBias)
+                    } else {
+                        err = abs(vUsr - vRef)
+                    }
+                    jointErrors[jointName, default: []].append(err)
                 }
                 let xRef = interpolateFeature(features: refFeatures, tQuery: tRef, key: "hip_x_norm")
                 let xUsr = interpolateFeature(features: userFeatures, tQuery: tUsr, key: "hip_x_norm")
@@ -884,14 +914,36 @@ public enum GrooveScoringEngine {
         }
         let otherScale = armError != nil ? (1.0 - armWeight) : 1.0
 
+        let confWeights = calibV2?.jointConfidenceWeights ?? [:]
         var weightedShape = 0.0
-        for (jointName, _, weight) in jointKeys {
-            let err = meanJointErr[jointName] ?? 0.0
-            let comp = max(0.0, 100.0 * (1.0 - (err / maxErr)))
-            weightedShape += (weight * otherScale) * comp
-        }
-        if let armError {
-            weightedShape += armWeight * max(0.0, 100.0 * (1.0 - (armError / maxErr)))
+        if confWeights.isEmpty {
+            for (jointName, _, weight) in jointKeys {
+                let err = meanJointErr[jointName] ?? 0.0
+                let comp = max(0.0, 100.0 * (1.0 - (err / maxErr)))
+                weightedShape += (weight * otherScale) * comp
+            }
+            if let armError {
+                weightedShape += armWeight * max(0.0, 100.0 * (1.0 - (armError / maxErr)))
+            }
+        } else {
+            var shapeTerms: [(weight: Double, comp: Double)] = []
+            for (jointName, _, weight) in jointKeys {
+                let err = meanJointErr[jointName] ?? 0.0
+                let comp = max(0.0, 100.0 * (1.0 - (err / maxErr)))
+                let wConf = shapeGroupConfidenceWeight(group: jointName, weights: confWeights, mirror: mirror)
+                shapeTerms.append(((weight * otherScale) * wConf, comp))
+            }
+            if let armError {
+                let comp = max(0.0, 100.0 * (1.0 - (armError / maxErr)))
+                let wConf = shapeGroupConfidenceWeight(group: "arms", weights: confWeights, mirror: mirror)
+                shapeTerms.append((armWeight * wConf, comp))
+            }
+            let weightSum = shapeTerms.reduce(0.0) { $0 + $1.weight }
+            if weightSum > 1e-12 {
+                for term in shapeTerms {
+                    weightedShape += (term.weight / weightSum) * term.comp
+                }
+            }
         }
 
         let worstJoints = meanJointErr
@@ -910,8 +962,15 @@ public enum GrooveScoringEngine {
         let userKneeVals = userFeatures.map { $0.mean_knee_flex }
         let refKneeVals = refFeatures.map { $0.mean_knee_flex }
         let userKneeRange = (userKneeVals.max() ?? 0.0) - (userKneeVals.min() ?? 0.0)
-        let refKneeRange = max(1.0, (refKneeVals.max() ?? 0.0) - (refKneeVals.min() ?? 0.0))
-        let kneeFlexRatio = userKneeRange / refKneeRange
+        let rawRefKneeRange = max(1.0, (refKneeVals.max() ?? 0.0) - (refKneeVals.min() ?? 0.0))
+        let effectiveRefKneeRange: Double
+        if let rom = calibV2?.rom {
+            let romCap = max(15.0, rom.plieKneeFlexDeg - rom.standingKneeFlexDeg)
+            effectiveRefKneeRange = min(rawRefKneeRange, romCap)
+        } else {
+            effectiveRefKneeRange = rawRefKneeRange
+        }
+        let kneeFlexRatio = userKneeRange / effectiveRefKneeRange
         let flexSubscore = (kneeFlexRatio < thresholds.groove.min_knee_flex_ratio)
             ? min(100.0, 100.0 * (kneeFlexRatio / max(0.01, thresholds.groove.min_knee_flex_ratio)))
             : 100.0
@@ -939,12 +998,14 @@ public enum GrooveScoringEngine {
         let grooveScore = roundTo(0.45 * flexSubscore + 0.30 * lagSubscore + 0.25 * smoothSubscore, places: 2)
 
         // 4. Hit timing, joint verdicts, hand styling
+        let metricScale = sanitizedMetricScale(calibV2?.metricScaleFactor)
         let hitTiming = scoreHitTiming(
             userFrames: userFrames,
             refFrames: refFrames,
             beatTimes: beatTimes,
             audioLatencyMs: audioLatencyMs,
-            config: hitsCfg
+            config: hitsCfg,
+            metricScaleFactor: metricScale
         )
         let tolerances = computeJointTolerances(
             clips: [reference] + goldenClips,
@@ -964,7 +1025,8 @@ public enum GrooveScoringEngine {
             tolerances: tolerances,
             config: jointCfg,
             windows: windows,
-            tolerance: toleranceCfg
+            tolerance: toleranceCfg,
+            calibrationV2: calibV2
         )
         let handStyling = scoreHandStyling(
             userFrames: userFrames,
@@ -1047,8 +1109,13 @@ public enum GrooveScoringEngine {
             let s = 0.5 * (((lk - lh).norm + (la - lk).norm) + ((rk - rh).norm + (ra - rk).norm))
             scales.append(s)
         }
-        guard !scales.isEmpty else { return 0.82 }
-        return roundTo(scales.reduce(0, +) / Double(scales.count), places: 4)
+        let metricScale = sanitizedMetricScale(clip.calibration_v2?.metricScaleFactor)
+        guard !scales.isEmpty else {
+            return clip.calibration_v2 == nil ? 0.82 : roundTo(0.82 * metricScale, places: 4)
+        }
+        let meanScale = scales.reduce(0, +) / Double(scales.count)
+        let scaled = clip.calibration_v2 == nil ? meanScale : (meanScale * metricScale)
+        return roundTo(scaled, places: 4)
     }
 
     public static func calibrateUserBaseline(
