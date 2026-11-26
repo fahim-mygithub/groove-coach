@@ -177,7 +177,7 @@ public struct GestureRouter: Sendable, Equatable {
 
     /// Convenience overload routing a legacy 4-case `GestureCommand`.
     public mutating func route(
-        _ command: GestureCommand,
+        legacyCommand command: GestureCommand,
         at time: Double? = nil,
         passed: Bool = false,
         nextUnlocked: Bool = false
@@ -274,7 +274,7 @@ public struct GestureRouter: Sendable, Equatable {
 
     /// Pure stateless phase-matrix overload for legacy 4-case `GestureCommand`.
     public static func route(
-        _ command: GestureCommand,
+        legacyCommand command: GestureCommand,
         phase: CoachingPhase,
         host: CoachingHost = .lesson,
         passed: Bool = false,
