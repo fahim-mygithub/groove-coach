@@ -669,5 +669,6 @@ final class GestureRecognizerTests: XCTestCase {
         XCTAssertEqual(GestureRouter.route(.swipeLeft, phase: .paused, host: .lesson), .returnToReview)
         XCTAssertNil(GestureRouter.route(.swipeRight, phase: .paused, host: .lesson, nextUnlocked: false))
         XCTAssertEqual(GestureRouter.route(.swipeRight, phase: .paused, host: .lesson, nextUnlocked: true), .nextItem)
+        XCTAssertEqual(GestureRouter.route(legacyCommand: .togglePause, phase: .paused, host: .practice), .startTake)
     }
 }
