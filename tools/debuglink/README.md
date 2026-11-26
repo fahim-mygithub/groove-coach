@@ -33,19 +33,19 @@ Default data dir: `%LOCALAPPDATA%\groove-coach\debuglink` (`~/.groove-coach/debu
 
 | Endpoint | From the app | Written under the data dir |
 | --- | --- | --- |
-| `POST /screen` | full-resolution JPEG of the screen (~1/s, q 0.7; camera preview composited in), `X-Screen-Name` | `screen/latest.jpg` + the newest 300 `screen/screen-*.jpg` |
+| `POST /screen` | phone screen JPEG (~1/s, native res, q 0.7, `X-Screen-Role: phone` or omitted) + external AirPlay/TV `UIWindowScene` JPEG (`0.5x` scale, q 0.65, `X-Screen-Role: external`), camera preview composited into both, `X-Screen-Name` | `screen/latest.jpg` + newest 300 `screen/screen-*.jpg`; external: `screen/latest-external.jpg` + newest 300 `screen/external-*.jpg` |
 | `POST /log` | `{"device", "appBuild", "dropped"?, "lines": [{ts, level, msg, file?, line?, seq}]}`; levels `debug/info/warn/error/stdout/stderr` (stdout/stderr are captured) | `logs-YYYYMMDD.jsonl` |
-| `POST /event` | list of `{kind, ts, screen, deviceModel, appBuild, ...}`: `app_launch`, `screen_appear`/`screen_disappear` (`name`), `app_active`/`app_inactive`/`app_foreground`/`app_background`, `memory_warning`, `take_end`, `calibration_end`, `crash` (`reason`, `stack`, `log` = last 200 lines, sent on the launch after the crash) | `events-YYYYMMDD.jsonl` |
+| `POST /event` | list of `{kind, ts, screen, deviceModel, appBuild, ...}`: `app_launch`, `screen_appear`/`screen_disappear` (`name`), `app_active`/`app_inactive`/`app_foreground`/`app_background`, `memory_warning`, `perf_sample` (`liveFps`, `thermalState` every ~5 s), `gesture_fired` (`command`, `mode`, `phase`, `action`), `external_scene`, `av_sync_probe`, `take_end` (+ `thermalState`), `calibration_end` (+ `thermalState`), `crash` (`reason`, `stack`, `log` = last 200 lines, sent on the launch after the crash) | `events-YYYYMMDD.jsonl` |
 | `POST /telemetry` | calibration readings, ~2 Hz while calibrating | `telemetry-YYYYMMDD.jsonl` |
 | `POST /frame` | annotated 360 px calibration camera JPEG every 3 s | `frames/latest.jpg` + newest 200 |
 
-`status.json` (also `GET /status.json`): connected device + IP, last seen, screen fps, last error, counts.
+`status.json` (also `GET /status.json`): connected device + IP, last seen, phone `fps` + `latest_screen`, external display `external_fps` + `latest_external_screen`, last error, counts.
 Bodies over 8 MB get 413.
 
 ## Watch
 
-- `GET /`: live page (latest screen, log tail, events; refreshes every second). Open http://localhost:8765/.
-- `GET /screen/latest.jpg`, `GET /tail.json?n=200` (`{"logs": [...], "events": [...]}`), `GET /status.json`.
+- `GET /`: live page (latest phone screen `#scr` + external TV screen `#scr-tv`, log tail, events; refreshes every second). Open http://localhost:8765/.
+- `GET /screen/latest.jpg`, `GET /screen/latest-external.jpg`, `GET /tail.json?n=200` (`{"logs": [...], "events": [...]}`), `GET /status.json`.
 - Tail a file: `Get-Content <data>\logs-YYYYMMDD.jsonl -Wait -Tail 20`
 
 ## Tuning

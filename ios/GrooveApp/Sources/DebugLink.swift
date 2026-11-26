@@ -24,6 +24,7 @@ final class DebugLink: ObservableObject {
     static let shared = DebugLink()
 
     static let telemetryInterval = 0.5
+    static let perfSampleInterval = 5.0
     static let tuningPollInterval = 2.0
     static let flushInterval = 1.0
     static let logBatch = 500
@@ -61,6 +62,7 @@ final class DebugLink: ObservableObject {
     private var pendingTelemetry: [[String: Any]] = []
     private var pendingEvents: [[String: Any]] = []
     private var lastTelemetryOffer = 0.0
+    private var lastPerfSample = -Double.infinity
     private var telemetryInFlight = false
     private var eventsInFlight = false
     private var logsInFlight = false
@@ -534,9 +536,45 @@ final class DebugLink: ObservableObject {
         var obj = stamped(fields)
         obj["kind"] = kind
         if obj["screen"] == nil { obj["screen"] = currentScreen }
+        if (kind == "take_end" || kind == "calibration_end"), obj["thermalState"] == nil {
+            obj["thermalState"] = DebugLinkDevice.thermalStateString()
+        }
         pendingEvents.append(obj)
         trimEvents()
         flushEvents()
+    }
+
+    /// Periodic live pose FPS + thermal state sample while `PracticeCamera` is running (at most every ~5 s).
+    func recordPerfSample(liveFps: Double, extra: [String: Any] = [:]) {
+        guard isEnabled, liveFps.isFinite else { return }
+        let now = CACurrentMediaTime()
+        guard now - lastPerfSample >= Self.perfSampleInterval - 0.1 else { return }
+        lastPerfSample = now
+        let roundedFps = (liveFps * 10).rounded() / 10
+        var fields: [String: Any] = [
+            "liveFps": roundedFps,
+            "thermalState": DebugLinkDevice.thermalStateString()
+        ]
+        for (k, v) in extra { fields[k] = v }
+        sendEvent(kind: "perf_sample", fields: fields)
+    }
+
+    /// Hands-free gesture command fired by `GestureRouter` / `CoachingStageCoordinator`.
+    func recordGestureFired(command: String, mode: String? = nil, phase: String? = nil, action: String? = nil,
+                            extra: [String: Any] = [:]) {
+        guard isEnabled else { return }
+        var fields: [String: Any] = ["command": command]
+        if let mode, !mode.isEmpty { fields["mode"] = mode }
+        if let phase, !phase.isEmpty { fields["phase"] = phase }
+        if let action, !action.isEmpty { fields["action"] = action }
+        for (k, v) in extra { fields[k] = v }
+        sendEvent(kind: "gesture_fired", fields: fields)
+    }
+
+    /// Convenience overload accepting `GestureCommand` directly.
+    func recordGestureFired(command: GestureCommand, mode: String? = nil, phase: String? = nil, action: String? = nil,
+                            extra: [String: Any] = [:]) {
+        recordGestureFired(command: command.rawValue, mode: mode, phase: phase, action: action, extra: extra)
     }
 
     private func enqueue(_ item: [String: Any]) {
@@ -782,6 +820,16 @@ enum DebugLinkDevice {
         }
         guard kr == KERN_SUCCESS else { return -1 }
         return (Double(info.resident_size) / 1_048_576 * 10).rounded() / 10
+    }
+
+    static func thermalStateString(_ state: ProcessInfo.ThermalState = ProcessInfo.processInfo.thermalState) -> String {
+        switch state {
+        case .nominal: return "nominal"
+        case .fair: return "fair"
+        case .serious: return "serious"
+        case .critical: return "critical"
+        @unknown default: return "unknown"
+        }
     }
 
     static func clock() -> String {

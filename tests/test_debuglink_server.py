@@ -138,6 +138,71 @@ class DebugLinkTests(unittest.TestCase):
     def test_default_keeps_300_screens(self):
         self.assertEqual(server.KEEP_SCREENS, 300)
 
+    def test_external_screen_role_stored_separately(self):
+        self.assertEqual(self.req("/screen/latest-external.jpg").code, 404)
+        old_keep = server.KEEP_SCREENS
+        server.KEEP_SCREENS = 2
+        try:
+            self.assertEqual(self.req("/screen", b"\xff\xd8phone0",
+                                      {"X-Screen-Name": "Practice", "X-Screen-Role": "phone"}).status, 204)
+            for i in range(3):
+                self.assertEqual(self.req("/screen", b"\xff\xd8ext%d" % i,
+                                          {"X-Screen-Name": "TV%d" % i, "X-Screen-Role": "external"}).status, 204)
+        finally:
+            server.KEEP_SCREENS = old_keep
+
+        sd = self.srv.state.data / "screen"
+        self.assertEqual((sd / "latest.jpg").read_bytes(), b"\xff\xd8phone0")
+        self.assertEqual(self.req("/screen/latest.jpg").read(), b"\xff\xd8phone0")
+        self.assertEqual((sd / "latest-external.jpg").read_bytes(), b"\xff\xd8ext2")
+        ext_resp = self.req("/screen/latest-external.jpg")
+        self.assertEqual(ext_resp.status, 200)
+        self.assertEqual(ext_resp.read(), b"\xff\xd8ext2")
+        self.assertEqual([p.read_bytes() for p in sorted(sd.glob("screen-*.jpg"))], [b"\xff\xd8phone0"])
+        self.assertEqual([p.read_bytes() for p in sorted(sd.glob("external-*.jpg"))],
+                         [b"\xff\xd8ext1", b"\xff\xd8ext2"])
+
+        status = json.loads(self.req("/status.json").read())
+        self.assertEqual(status["latest_screen"], "Practice")
+        self.assertEqual(status["latest_external_screen"], "TV2")
+        self.assertEqual(status["counts"]["screen"], 1)
+        self.assertEqual(status["counts"]["external_screen"], 3)
+        self.assertGreater(status["external_fps"], 0)
+        self.assertEqual(status["fps"], 0.0)
+
+        page = self.req("/").read()
+        self.assertIn(b'id="scr-tv"', page)
+        self.assertIn(b"/screen/latest-external.jpg", page)
+
+    def test_phone_screen_default_role_preserved(self):
+        self.assertEqual(self.req("/screen", b"\xff\xd8def1", {"X-Screen-Name": "Courses"}).status, 204)
+        self.assertEqual(self.req("/screen", b"\xff\xd8def2",
+                                  {"X-Screen-Name": "LessonPlayer", "X-Screen-Role": "phone"}).status, 204)
+        sd = self.srv.state.data / "screen"
+        self.assertEqual((sd / "latest.jpg").read_bytes(), b"\xff\xd8def2")
+        self.assertFalse((sd / "latest-external.jpg").exists())
+        self.assertEqual(list(sd.glob("external-*.jpg")), [])
+        self.assertEqual(len(list(sd.glob("screen-*.jpg"))), 2)
+        self.assertEqual(self.req("/screen/latest-external.jpg").code, 404)
+
+        status = json.loads((self.srv.state.data / "status.json").read_text())
+        self.assertEqual(status["latest_screen"], "LessonPlayer")
+        self.assertIsNone(status["latest_external_screen"])
+        self.assertEqual(status["external_fps"], 0.0)
+        self.assertGreater(status["fps"], 0)
+
+    def test_perf_sample_and_gesture_fired_events(self):
+        events = [
+            {"kind": "perf_sample", "liveFps": 24.6, "thermalState": "nominal"},
+            {"kind": "gesture_fired", "command": "swipeRight", "mode": "betweenTakes",
+             "phase": "results", "action": "nextSegment"},
+        ]
+        self.assertEqual(self.req("/event", json.dumps(events).encode()).status, 204)
+        tail = json.loads(self.req("/tail.json?n=10").read())
+        self.assertEqual([e["kind"] for e in tail["events"]], ["perf_sample", "gesture_fired"])
+        self.assertEqual(tail["events"][0]["thermalState"], "nominal")
+        self.assertEqual(tail["events"][1]["command"], "swipeRight")
+
     def test_unknown_post_404(self):
         self.assertEqual(self.req("/nope", b"{}").code, 404)
 
