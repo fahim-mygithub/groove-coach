@@ -161,6 +161,7 @@ final class PracticeCamera: NSObject,
     // videoQueue state
     private var configured = false
     private var configuredMode: CameraMode?
+    private var configuredRequestedMode: CameraMode?
     private var recorder: TakeRecorder?
     private var analysisBusy = false
     private var loggedVideoIntrinsicsOnce = false
@@ -242,12 +243,14 @@ final class PracticeCamera: NSObject,
             autoExternalDisplayConnected = extConnected
         }
         let desiredMode = resolveRequestedCameraModeLocked()
+        recomputeRatesAndModesLocked()
+        let targetGestureMode = effectiveGestureModeLocked()
         stateLock.unlock()
 
+        syncGestureModeOnAnalysisQueue(targetGestureMode, forceResetLatch: false)
         videoQueue.async { [weak self] in
             guard let self else { return }
-            let resolvedHardwareMode = Self.resolveAvailableHardwareMode(for: desiredMode)
-            if !self.configured || self.configuredMode != resolvedHardwareMode {
+            if !self.isAlreadyConfiguredOnVideoQueue(for: desiredMode) {
                 self.configureSession(requestedMode: desiredMode)
             }
             self.applyDepthConnectionStateOnVideoQueue()
@@ -262,6 +265,7 @@ final class PracticeCamera: NSObject,
         stateLock.lock()
         isTakeRecordingActive = false
         explicitCoachingPhase = nil
+        manualGestureMode = nil
         _depthTargetHz = Self.disabledDepthHz
         stateLock.unlock()
 
@@ -270,7 +274,15 @@ final class PracticeCamera: NSObject,
             self.analysisTimestamps.removeAll()
             self.lastPerfReportTime = -Double.infinity
             self.previousGestureLandmarks = nil
-            self.recognizer.resetPreservingHoldLatch()
+            if self.recognizer.mode != .betweenTakes {
+                self.recognizer.mode = .betweenTakes
+            } else {
+                self.recognizer.resetPreservingHoldLatch()
+            }
+            if self.lastPublishedHoldProgress != 0 {
+                self.lastPublishedHoldProgress = 0
+                DispatchQueue.main.async { self.gestureHoldProgress = 0 }
+            }
         }
         depthQueue.async { [weak self] in
             self?.lastDepthSampleTime = -Double.infinity
@@ -315,13 +327,19 @@ final class PracticeCamera: NSObject,
     func setCoachingPhase(_ phase: CoachingPhase) {
         stateLock.lock()
         explicitCoachingPhase = phase
-        if phase != .recording {
+        if phase != .recording && phase != .countIn {
             isTakeRecordingActive = false
         }
         recomputeRatesAndModesLocked()
         let targetGestureMode = effectiveGestureModeLocked()
+        let targetDepthHz = _depthTargetHz
         stateLock.unlock()
 
+        if targetDepthHz >= Self.calibratingDepthHz {
+            depthQueue.async { [weak self] in
+                self?.lastDepthSampleTime = -Double.infinity
+            }
+        }
         syncGestureModeOnAnalysisQueue(targetGestureMode, forceResetLatch: true)
         videoQueue.async { [weak self] in
             self?.applyDepthConnectionStateOnVideoQueue()
@@ -364,6 +382,10 @@ final class PracticeCamera: NSObject,
     ) {
         stateLock.lock()
         isCalibrationStreamActive = true
+        isTakeRecordingActive = false
+        if explicitCoachingPhase == .analyzing {
+            explicitCoachingPhase = nil
+        }
         recomputeRatesAndModesLocked()
         let targetGestureMode = effectiveGestureModeLocked()
         stateLock.unlock()
@@ -431,11 +453,14 @@ final class PracticeCamera: NSObject,
     func startRecording(to url: URL) {
         stateLock.lock()
         isTakeRecordingActive = true
+        if explicitCoachingPhase == .analyzing {
+            explicitCoachingPhase = nil
+        }
         recomputeRatesAndModesLocked()
         let targetGestureMode = effectiveGestureModeLocked()
         stateLock.unlock()
 
-        syncGestureModeOnAnalysisQueue(targetGestureMode, forceResetLatch: false)
+        syncGestureModeOnAnalysisQueue(targetGestureMode, forceResetLatch: true)
         videoQueue.async { [weak self] in
             guard let self else { return }
             self.applyDepthConnectionStateOnVideoQueue()
@@ -444,20 +469,23 @@ final class PracticeCamera: NSObject,
         }
     }
 
-    private func transitionToAnalyzingAfterRecording() -> GestureMode {
+    private func endRecordingAfterFinish() -> GestureMode {
         stateLock.lock()
         defer { stateLock.unlock() }
         isTakeRecordingActive = false
-        if explicitCoachingPhase == nil || explicitCoachingPhase == .recording || explicitCoachingPhase == .countIn {
-            // Keep LiDAR at 0 Hz and gestures suppressed during post-take `.analyzing` until next phase change.
-            explicitCoachingPhase = .analyzing
+        // Never set `.analyzing` implicitly here: callers that do not drive `setCoachingPhase(_:)`
+        // (`PracticeView` / `LessonPlayerView` prior to `CoachingStageCoordinator`) rely on returning
+        // to `.betweenTakes` gestures and 1 Hz idle LiDAR depth after a take finishes, whereas callers
+        // that do drive `setCoachingPhase(.analyzing)` set it explicitly and clear it on `.results`/`.idle`.
+        if explicitCoachingPhase == .recording || explicitCoachingPhase == .countIn {
+            explicitCoachingPhase = nil
         }
         recomputeRatesAndModesLocked()
         return effectiveGestureModeLocked()
     }
 
     func finishRecording() async -> TakeRecorder.Output? {
-        let targetGestureMode = transitionToAnalyzingAfterRecording()
+        let targetGestureMode = endRecordingAfterFinish()
         syncGestureModeOnAnalysisQueue(targetGestureMode, forceResetLatch: true)
         return await withCheckedContinuation { continuation in
             videoQueue.async { [weak self] in
@@ -479,8 +507,8 @@ final class PracticeCamera: NSObject,
     func cancelRecording() {
         stateLock.lock()
         isTakeRecordingActive = false
-        if explicitCoachingPhase == .recording || explicitCoachingPhase == .countIn {
-            explicitCoachingPhase = .idle
+        if explicitCoachingPhase == .recording || explicitCoachingPhase == .countIn || explicitCoachingPhase == .analyzing {
+            explicitCoachingPhase = nil
         }
         recomputeRatesAndModesLocked()
         let targetGestureMode = effectiveGestureModeLocked()
@@ -518,6 +546,7 @@ final class PracticeCamera: NSObject,
             session.commitConfiguration()
             configured = false
             configuredMode = nil
+            configuredRequestedMode = nil
             let label = requestedMode.isRear ? "Rear camera unavailable." : "Front camera unavailable."
             publishError(label)
             DebugLog.error("camera input unavailable for mode=\(requestedMode.rawValue)")
@@ -533,6 +562,7 @@ final class PracticeCamera: NSObject,
             session.commitConfiguration()
             configured = false
             configuredMode = nil
+            configuredRequestedMode = nil
             publishError("Camera output unavailable.")
             DebugLog.error("camera video output unavailable")
             return
@@ -545,7 +575,7 @@ final class PracticeCamera: NSObject,
             depthOutput.isFilteringEnabled = true
             depthOutput.alwaysDiscardsLateDepthData = true
             depthOutput.setDelegate(self, callbackQueue: depthQueue)
-            if session.canAddOutput(depthOutput), Self.ensureDepthCapableFormat(on: device) {
+            if Self.ensureDepthCapableFormat(on: device), session.canAddOutput(depthOutput) {
                 session.addOutput(depthOutput)
                 depthAdded = true
             } else {
@@ -555,7 +585,8 @@ final class PracticeCamera: NSObject,
             }
         }
 
-        // Enforce 30 fps cap (and float32 depth format when LiDAR active) AFTER preset/format/outputs are bound.
+        // Select float32 depth format + 30 fps cap before commit, and re-enforce after `commitConfiguration()`
+        // so `sessionPreset` reconciliation cannot reset `activeVideoMinFrameDuration` or `activeDepthDataFormat`.
         Self.configureFrameRateAndDepthFormat(on: device, enableDepth: depthAdded)
 
         if let videoConnection = output.connection(with: .video) {
@@ -584,6 +615,7 @@ final class PracticeCamera: NSObject,
         }
 
         session.commitConfiguration()
+        Self.configureFrameRateAndDepthFormat(on: device, enableDepth: depthAdded)
 
         let vFoV = CalibrationSensors.resolvedVerticalFoVDeg(for: device)
         let hFoV = CalibrationSensors.portraitHorizontalFoVDeg(fromVerticalFoVDeg: vFoV)
@@ -607,6 +639,7 @@ final class PracticeCamera: NSObject,
 
         configured = true
         configuredMode = resolvedMode
+        configuredRequestedMode = requestedMode
         loggedVideoIntrinsicsOnce = false
         applyDepthConnectionStateOnVideoQueue()
 
@@ -1052,12 +1085,20 @@ final class PracticeCamera: NSObject,
             _depthTargetHz = Self.disabledDepthHz
             return
         }
+        if explicitCoachingPhase == .analyzing || explicitCoachingPhase == .clapSync {
+            _depthTargetHz = Self.disabledDepthHz
+            return
+        }
+        if isCalibrationStreamActive {
+            _depthTargetHz = Self.calibratingDepthHz
+            return
+        }
         if let phase = explicitCoachingPhase {
             switch phase {
             case .calibrating:
                 _depthTargetHz = Self.calibratingDepthHz
             case .idle, .results, .paused:
-                _depthTargetHz = isCalibrationStreamActive ? Self.calibratingDepthHz : Self.idleDepthHz
+                _depthTargetHz = Self.idleDepthHz
             case .countIn, .recording, .analyzing, .clapSync:
                 _depthTargetHz = Self.disabledDepthHz
             }
@@ -1068,27 +1109,33 @@ final class PracticeCamera: NSObject,
             case .calibrating:
                 _depthTargetHz = Self.calibratingDepthHz
             case .betweenTakes:
-                _depthTargetHz = isCalibrationStreamActive ? Self.calibratingDepthHz : Self.idleDepthHz
+                _depthTargetHz = Self.idleDepthHz
             case .countIn, .recording, .disabled:
                 _depthTargetHz = Self.disabledDepthHz
             }
             return
         }
-        _depthTargetHz = isCalibrationStreamActive ? Self.calibratingDepthHz : Self.idleDepthHz
+        _depthTargetHz = Self.idleDepthHz
     }
 
     private func effectiveGestureModeLocked() -> GestureMode {
-        if let phase = explicitCoachingPhase {
-            if isCalibrationStreamActive && phase == .idle {
-                return .calibrating
-            }
-            return phase.gestureMode
+        if explicitCoachingPhase == .analyzing || explicitCoachingPhase == .clapSync {
+            return .disabled
         }
         if isCalibrationStreamActive {
             return .calibrating
         }
         if isTakeRecordingActive {
+            if explicitCoachingPhase == .countIn {
+                return .countIn
+            }
+            if explicitCoachingPhase == nil, manualGestureMode == .countIn {
+                return .countIn
+            }
             return .recording
+        }
+        if let phase = explicitCoachingPhase {
+            return phase.gestureMode
         }
         return manualGestureMode ?? .betweenTakes
     }
@@ -1109,6 +1156,16 @@ final class PracticeCamera: NSObject,
         }
     }
 
+    private func isAlreadyConfiguredOnVideoQueue(for desiredMode: CameraMode) -> Bool {
+        guard configured else { return false }
+        let resolvedHardwareMode = Self.resolveAvailableHardwareMode(for: desiredMode)
+        if configuredMode == resolvedHardwareMode {
+            configuredRequestedMode = desiredMode
+            return true
+        }
+        return configuredRequestedMode == desiredMode
+    }
+
     private func reconfigureForDesiredModeIfNeeded(_ desiredMode: CameraMode) {
         videoQueue.async { [weak self] in
             guard let self else { return }
@@ -1123,8 +1180,7 @@ final class PracticeCamera: NSObject,
                 }
                 return
             }
-            let resolvedHardwareMode = Self.resolveAvailableHardwareMode(for: desiredMode)
-            guard self.configuredMode != resolvedHardwareMode else {
+            guard !self.isAlreadyConfiguredOnVideoQueue(for: desiredMode) else {
                 self.applyDepthConnectionStateOnVideoQueue()
                 return
             }
@@ -1172,14 +1228,18 @@ final class PracticeCamera: NSObject,
         stateLock.lock()
         autoExternalDisplayConnected = isConnected
         let isAuto = (preferredCameraMode == nil)
+        // Do not tear down the camera mid-take, mid-calibration, or while paused on an AirPlay drop (§4.3).
+        let isBusyWithTakeOrCalibration = isTakeRecordingActive
+            || isCalibrationStreamActive
+            || (explicitCoachingPhase != nil && explicitCoachingPhase != .idle)
+        let canAutoSwitchNow = isAuto && !isBusyWithTakeOrCalibration
         let desiredMode = resolveRequestedCameraModeLocked()
         stateLock.unlock()
 
-        guard isAuto else { return }
+        guard canAutoSwitchNow else { return }
         videoQueue.async { [weak self] in
             guard let self, self.configured, self.session.isRunning else { return }
-            let resolved = Self.resolveAvailableHardwareMode(for: desiredMode)
-            if self.configuredMode != resolved {
+            if !self.isAlreadyConfiguredOnVideoQueue(for: desiredMode) {
                 self.configureSession(requestedMode: desiredMode)
             }
         }
