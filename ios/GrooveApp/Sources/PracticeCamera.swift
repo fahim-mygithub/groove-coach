@@ -144,8 +144,8 @@ final class PracticeCamera: NSObject,
     private var _activeCameraMode: CameraMode = .frontSelfView
     private var _portraitVideoWidth: Int = 720
     private var _portraitVideoHeight: Int = 1280
-    private var _verticalFoVDeg: Double = CalibrationSensors.defaultVerticalFoVDeg
-    private var _horizontalFoVDeg: Double = CalibrationSensors.portraitHorizontalFoVDeg(
+    private var lockedVerticalFoVDeg: Double = CalibrationSensors.defaultVerticalFoVDeg
+    private var lockedHorizontalFoVDeg: Double = CalibrationSensors.portraitHorizontalFoVDeg(
         fromVerticalFoVDeg: CalibrationSensors.defaultVerticalFoVDeg
     )
     private var _latestVideoIntrinsics: CalibrationIntrinsics?
@@ -444,17 +444,20 @@ final class PracticeCamera: NSObject,
         }
     }
 
-    func finishRecording() async -> TakeRecorder.Output? {
+    private func transitionToAnalyzingAfterRecording() -> GestureMode {
         stateLock.lock()
+        defer { stateLock.unlock() }
         isTakeRecordingActive = false
         if explicitCoachingPhase == nil || explicitCoachingPhase == .recording || explicitCoachingPhase == .countIn {
             // Keep LiDAR at 0 Hz and gestures suppressed during post-take `.analyzing` until next phase change.
             explicitCoachingPhase = .analyzing
         }
         recomputeRatesAndModesLocked()
-        let targetGestureMode = effectiveGestureModeLocked()
-        stateLock.unlock()
+        return effectiveGestureModeLocked()
+    }
 
+    func finishRecording() async -> TakeRecorder.Output? {
+        let targetGestureMode = transitionToAnalyzingAfterRecording()
         syncGestureModeOnAnalysisQueue(targetGestureMode, forceResetLatch: true)
         return await withCheckedContinuation { continuation in
             videoQueue.async { [weak self] in
@@ -593,8 +596,8 @@ final class PracticeCamera: NSObject,
         _activeCameraMode = resolvedMode
         _portraitVideoWidth = portraitW
         _portraitVideoHeight = portraitH
-        _verticalFoVDeg = vFoV
-        _horizontalFoVDeg = hFoV
+        lockedVerticalFoVDeg = vFoV
+        lockedHorizontalFoVDeg = hFoV
         _latestVideoIntrinsics = nil
         if resolvedMode != .rearLiDAR {
             _latestDepthSample = nil
@@ -785,7 +788,7 @@ final class PracticeCamera: NSObject,
         stateLock.lock()
         let mode = _activeCameraMode
         let targetHz = _depthTargetHz
-        let vFoV = _verticalFoVDeg
+        let vFoV = lockedVerticalFoVDeg
         let portraitW = _portraitVideoWidth
         let portraitH = _portraitVideoHeight
         let gravity = _cachedDeviceGravity
@@ -847,8 +850,8 @@ final class PracticeCamera: NSObject,
 
         stateLock.lock()
         let currentMode = _activeCameraMode
-        let currentVFoV = _verticalFoVDeg
-        let currentHFoV = _horizontalFoVDeg
+        let currentVFoV = lockedVerticalFoVDeg
+        let currentHFoV = lockedHorizontalFoVDeg
         let currentDepth = _latestDepthSample
         stateLock.unlock()
 
