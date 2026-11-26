@@ -5,22 +5,43 @@ import ImageIO
 import UIKit
 import UniformTypeIdentifiers
 
-/// Debug Link screen sharing: what is on screen, at native resolution (window points x screen scale), about once a
-/// second, JPEG quality 0.7, to `POST /screen`. A frame is skipped while the previous upload is still in flight, when
-/// the app is not active, and while the link is off or has no server.
+/// Debug Link screen sharing: what is on screen, about once a second, to `POST /screen`. Captures first the phone
+/// `UIWindowScene` (`X-Screen-Role: phone`, native resolution, JPEG quality 0.7) and then any connected external
+/// display `UIWindowScene` (`X-Screen-Role: external`, `0.5x` scale, JPEG quality 0.65) sequentially inside a single
+/// `inFlight` task. A tick is skipped while the previous upload is still in flight, when the app is not active, and
+/// while the link is off or has no server.
 ///
 /// Camera preview: `drawHierarchy` leaves `AVCaptureVideoPreviewLayer` black, so the latest camera frame (handed
-/// over by `PracticeCamera` through `CameraFrameStore`) is composited into each visible preview layer's video rect,
-/// replacing only the black pixels there, so the skeleton / calibration HUD drawn on top stays on top. Chosen over
-/// ReplayKit's in-app `RPScreenRecorder.startCapture` because that asks the owner "Allow screen recording?" on every
-/// app session (no zero-configuration), stops whenever the app backgrounds, and runs alongside the take recorder.
-/// `AVPlayerLayer` (lesson video) is not composited and shows black.
+/// over by `PracticeCamera` through `CameraFrameStore`) is composited into each visible preview layer's video rect
+/// across both phone and external scenes, replacing only the black pixels there, so the skeleton / calibration HUD
+/// drawn on top stays on top. Chosen over ReplayKit's in-app `RPScreenRecorder.startCapture` because that asks the
+/// owner "Allow screen recording?" on every app session (no zero-configuration), stops whenever the app backgrounds,
+/// and runs alongside the take recorder. `AVPlayerLayer` (lesson video) is not composited and shows black.
 @MainActor
 final class ScreenStreamer {
     static let shared = ScreenStreamer()
 
     static let interval = 1.0
     static let jpegQuality: CGFloat = 0.7
+    static let externalScaleFactor: CGFloat = 0.5
+    static let externalJpegQuality: CGFloat = 0.65
+
+    private struct SceneCapture: Sendable {
+        let role: String
+        let screenName: String
+        let snapshot: CGImage
+        let scale: CGFloat
+        let quality: CGFloat
+        let previews: [PreviewSlot]
+    }
+
+    private struct UploadResult: Sendable {
+        let ok: Bool
+        let failure: String?
+        let bytes: Int
+        let screen: String
+        let role: String
+    }
 
     private var timer: Timer?
     private var inFlight = false
@@ -46,23 +67,107 @@ final class ScreenStreamer {
     }
 
     private func tick() {
-        guard !inFlight, let base = DebugLink.shared.streamBase,
-              UIApplication.shared.applicationState == .active,
-              let scene = UIApplication.shared.connectedScenes
-                .compactMap({ $0 as? UIWindowScene })
-                .first(where: { $0.activationState == .foregroundActive }) else {
+        guard !inFlight else { return }
+        guard let base = DebugLink.shared.streamBase,
+              UIApplication.shared.applicationState == .active else {
             CameraFrameStore.shared.setWanted(false)
             return
         }
+
+        let windowScenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+        var orderedScenes: [(scene: UIWindowScene, isExternal: Bool)] = []
+        if let phoneScene = windowScenes.first(where: { !Self.isExternal($0) && $0.activationState == .foregroundActive }) {
+            orderedScenes.append((phoneScene, false))
+        }
+        for extScene in windowScenes where Self.isExternal(extScene) {
+            if extScene.activationState == .foregroundActive || extScene.activationState == .foregroundInactive {
+                orderedScenes.append((extScene, true))
+            }
+        }
+        guard !orderedScenes.isEmpty else {
+            CameraFrameStore.shared.setWanted(false)
+            return
+        }
+
+        let screenName = DebugLink.shared.currentScreen
+        var captures: [SceneCapture] = []
+        for item in orderedScenes {
+            if let cap = Self.captureScene(item.scene, isExternal: item.isExternal, screenName: screenName) {
+                captures.append(cap)
+            }
+        }
+
+        let anyPreviews = captures.contains { !$0.previews.isEmpty }
+        CameraFrameStore.shared.setWanted(anyPreviews)
+        guard !captures.isEmpty else { return }
+
+        let camera = anyPreviews ? CameraFrameStore.shared.latest(maxAge: 2) : nil
+        let device = DebugLinkDevice.model
+        let session = self.session
+        inFlight = true
+        Task.detached(priority: .utility) {
+            var results: [UploadResult] = []
+            for capture in captures {
+                let composed = ScreenCompositor.compose(capture.snapshot, scale: capture.scale,
+                                                        previews: capture.previews, camera: camera) ?? capture.snapshot
+                var ok = false
+                var failure: String?
+                var bytes = 0
+                if let jpeg = ScreenCompositor.jpeg(composed, quality: capture.quality) {
+                    bytes = jpeg.count
+                    let cleanScreen = String(capture.screenName.unicodeScalars
+                        .filter { $0.isASCII && $0.value >= 0x20 }
+                        .map(Character.init))
+                    var req = URLRequest(url: base.appendingPathComponent("screen"))
+                    req.httpMethod = "POST"
+                    req.setValue("image/jpeg", forHTTPHeaderField: "Content-Type")
+                    req.setValue(cleanScreen, forHTTPHeaderField: "X-Screen-Name")
+                    req.setValue(capture.role, forHTTPHeaderField: "X-Screen-Role")
+                    req.setValue(device, forHTTPHeaderField: "X-Device")
+                    req.setValue("\(composed.width)x\(composed.height)", forHTTPHeaderField: "X-Size")
+                    req.httpBody = jpeg
+                    do {
+                        let (_, resp) = try await session.data(for: req)
+                        let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
+                        ok = (200..<300).contains(code)
+                        if !ok { failure = "screen(\(capture.role)): HTTP \(code)" }
+                    } catch {
+                        failure = error.localizedDescription
+                    }
+                } else {
+                    failure = "screen(\(capture.role)): JPEG encode failed"
+                }
+                results.append(UploadResult(ok: ok, failure: failure, bytes: bytes,
+                                            screen: capture.screenName, role: capture.role))
+            }
+            await ScreenStreamer.shared.finished(results)
+        }
+    }
+
+    private func finished(_ results: [UploadResult]) {
+        inFlight = false
+        for r in results {
+            let label = r.role == "external" ? "\(r.screen):external" : r.screen
+            DebugLink.shared.screenFinished(ok: r.ok, failure: r.failure, bytes: r.bytes, screen: label)
+        }
+    }
+
+    private static func isExternal(_ scene: UIWindowScene) -> Bool {
+        if scene.session.role != .windowApplication { return true }
+        return scene.screen != UIScreen.main
+    }
+
+    private static func captureScene(_ scene: UIWindowScene, isExternal: Bool, screenName: String) -> SceneCapture? {
         let windows = scene.windows.filter { !$0.isHidden && $0.alpha > 0 }.sorted { $0.windowLevel < $1.windowLevel }
-        guard let main = windows.first(where: { $0.isKeyWindow }) ?? windows.first else { return }
+        guard let main = windows.first(where: { $0.isKeyWindow }) ?? windows.first else { return nil }
         let bounds = main.bounds
-        guard bounds.width > 0, bounds.height > 0 else { return }
-        let scale = main.screen.scale
+        guard bounds.width > 0, bounds.height > 0 else { return nil }
+        let nativeScale = main.screen.scale
+        let scale = isExternal ? max(0.25, nativeScale * Self.externalScaleFactor) : nativeScale
+        let quality = isExternal ? Self.externalJpegQuality : Self.jpegQuality
 
         var previews: [PreviewSlot] = []
         for w in windows { Self.collectPreviews(w.layer, window: w, into: &previews) }
-        CameraFrameStore.shared.setWanted(!previews.isEmpty)
 
         let format = UIGraphicsImageRendererFormat()
         format.scale = scale
@@ -74,46 +179,15 @@ final class ScreenStreamer {
                 w.drawHierarchy(in: w.convert(w.bounds, to: main), afterScreenUpdates: false)
             }
         }
-        guard let cg = image.cgImage else { return }
-        let camera = previews.isEmpty ? nil : CameraFrameStore.shared.latest(maxAge: 2)
-        let screen = DebugLink.shared.currentScreen
-        let device = DebugLinkDevice.model
-        let session = self.session
-        let quality = Self.jpegQuality
-        inFlight = true
-        Task.detached(priority: .utility) {
-            let composed = ScreenCompositor.compose(cg, scale: scale, previews: previews, camera: camera) ?? cg
-            var ok = false
-            var failure: String?
-            var bytes = 0
-            if let jpeg = ScreenCompositor.jpeg(composed, quality: quality) {
-                bytes = jpeg.count
-                var req = URLRequest(url: base.appendingPathComponent("screen"))
-                req.httpMethod = "POST"
-                req.setValue("image/jpeg", forHTTPHeaderField: "Content-Type")
-                req.setValue(String(screen.unicodeScalars.filter { $0.isASCII && $0.value >= 0x20 }.map(Character.init)),
-                             forHTTPHeaderField: "X-Screen-Name")
-                req.setValue(device, forHTTPHeaderField: "X-Device")
-                req.setValue("\(composed.width)x\(composed.height)", forHTTPHeaderField: "X-Size")
-                req.httpBody = jpeg
-                do {
-                    let (_, resp) = try await session.data(for: req)
-                    let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
-                    ok = (200..<300).contains(code)
-                    if !ok { failure = "screen: HTTP \(code)" }
-                } catch {
-                    failure = error.localizedDescription
-                }
-            } else {
-                failure = "screen: JPEG encode failed"
-            }
-            await ScreenStreamer.shared.finished(ok: ok, failure: failure, bytes: bytes, screen: screen)
-        }
-    }
-
-    private func finished(ok: Bool, failure: String?, bytes: Int, screen: String) {
-        inFlight = false
-        DebugLink.shared.screenFinished(ok: ok, failure: failure, bytes: bytes, screen: screen)
+        guard let cg = image.cgImage else { return nil }
+        return SceneCapture(
+            role: isExternal ? "external" : "phone",
+            screenName: screenName,
+            snapshot: cg,
+            scale: scale,
+            quality: quality,
+            previews: previews
+        )
     }
 
     /// Visible `AVCaptureVideoPreviewLayer`s, in `main`-window points (all windows share the screen origin).

@@ -88,9 +88,13 @@ class State:
         self.last_good = None  # (bytes, etag)
         self.frame_seq = 0
         self.screen_seq = 0
+        self.external_screen_seq = 0
         self.screen_files = collections.deque(sorted(self.screens.glob("screen-*.jpg")))
+        self.external_screen_files = collections.deque(sorted(self.screens.glob("external-*.jpg")))
         self.latest_screen = None  # (bytes, label, ts)
+        self.latest_external_screen = None  # (bytes, label, ts)
         self.screen_times = collections.deque(maxlen=20)
+        self.external_screen_times = collections.deque(maxlen=20)
         self.log_tail = collections.deque(maxlen=TAIL_LINES)
         self.event_tail = collections.deque(maxlen=500)
         self.device = None
@@ -108,13 +112,18 @@ class State:
         if device:
             self.device = device
 
-    def _status_locked(self):
-        now = time.time()
-        fps = 0.0
-        recent = [t for t in self.screen_times if now - t <= 10]
+    @staticmethod
+    def _fps(times, now):
+        recent = [t for t in times if now - t <= 10]
         if len(recent) >= 2:
             span = recent[-1] - recent[0]
-            fps = round((len(recent) - 1) / span, 2) if span > 0 else 0.0
+            return round((len(recent) - 1) / span, 2) if span > 0 else 0.0
+        return 0.0
+
+    def _status_locked(self):
+        now = time.time()
+        fps = self._fps(self.screen_times, now)
+        external_fps = self._fps(self.external_screen_times, now)
         return {
             "device": self.device,
             "device_ip": self.device_ip,
@@ -122,9 +131,11 @@ class State:
             "last_seen": self.last_seen,
             "last_seen_iso": datetime.fromtimestamp(self.last_seen).isoformat() if self.last_seen else None,
             "fps": fps,
+            "external_fps": external_fps,
             "last_error": self.last_error,
             "counts": dict(self.counts),
             "latest_screen": self.latest_screen[1] if self.latest_screen else None,
+            "latest_external_screen": self.latest_external_screen[1] if self.latest_external_screen else None,
             "bonjour": self.bonjour,
             "updated": now,
         }
@@ -228,24 +239,41 @@ class State:
             extra = it.get("screen") or it.get("name") or it.get("reason") or ""
             print("event %s %s" % (it.get("kind", "?"), extra), flush=True)
 
-    def add_screen(self, body, label, client_ip=None, device=None):
+    def add_screen(self, body, label, client_ip=None, device=None, role=None):
         ts = time.time()
+        norm_role = "external" if (role or "").strip().lower() == "external" else "phone"
         with self.lock:
-            self.screen_seq += 1
             stamp = datetime.fromtimestamp(ts).strftime("%Y%m%d-%H%M%S-%f")
-            path = self.screens / ("screen-%s-%06d.jpg" % (stamp, self.screen_seq))
-            path.write_bytes(body)
-            self.screen_files.append(path)
-            while len(self.screen_files) > KEEP_SCREENS:
-                old = self.screen_files.popleft()
-                try:
-                    old.unlink()
-                except OSError:
-                    pass
-            _write_replace(self.screens / "latest.jpg", body)
-            self.latest_screen = (body, label, ts)
-            self.screen_times.append(ts)
-            self.counts["screen"] += 1
+            if norm_role == "external":
+                self.external_screen_seq += 1
+                path = self.screens / ("external-%s-%06d.jpg" % (stamp, self.external_screen_seq))
+                path.write_bytes(body)
+                self.external_screen_files.append(path)
+                while len(self.external_screen_files) > KEEP_SCREENS:
+                    old = self.external_screen_files.popleft()
+                    try:
+                        old.unlink()
+                    except OSError:
+                        pass
+                _write_replace(self.screens / "latest-external.jpg", body)
+                self.latest_external_screen = (body, label, ts)
+                self.external_screen_times.append(ts)
+                self.counts["external_screen"] += 1
+            else:
+                self.screen_seq += 1
+                path = self.screens / ("screen-%s-%06d.jpg" % (stamp, self.screen_seq))
+                path.write_bytes(body)
+                self.screen_files.append(path)
+                while len(self.screen_files) > KEEP_SCREENS:
+                    old = self.screen_files.popleft()
+                    try:
+                        old.unlink()
+                    except OSError:
+                        pass
+                _write_replace(self.screens / "latest.jpg", body)
+                self.latest_screen = (body, label, ts)
+                self.screen_times.append(ts)
+                self.counts["screen"] += 1
             self._seen(client_ip, device)
             self._write_status_locked()
 
@@ -260,15 +288,17 @@ LIVE_PAGE = """<!doctype html>
 <html><head><meta charset="utf-8"><title>Groove Coach debuglink</title>
 <style>
 body{margin:0;font:13px system-ui,sans-serif;background:#111;color:#ddd;display:flex;height:100vh}
-#left{flex:0 0 auto;padding:8px;display:flex;flex-direction:column;align-items:center}
-#scr{max-height:calc(100vh - 60px);max-width:45vw;border:1px solid #333;background:#000}
+#left{flex:0 0 auto;padding:8px;display:flex;flex-direction:column;align-items:center;gap:6px}
+#screens{display:flex;gap:8px;align-items:flex-start}
+#scr{max-height:calc(100vh - 60px);max-width:25vw;border:1px solid #333;background:#000}
+#scr-tv{max-height:calc(100vh - 60px);max-width:35vw;border:1px solid #333;background:#000;display:none}
 #right{flex:1;display:flex;flex-direction:column;min-width:0;padding:8px}
 #status{white-space:pre-wrap;font:12px monospace;color:#9cf;margin-bottom:6px}
 #log{flex:1;overflow:auto;font:12px monospace;white-space:pre-wrap;background:#000;padding:6px;border:1px solid #333}
 #ev{height:22%;overflow:auto;font:12px monospace;white-space:pre-wrap;background:#000;padding:6px;margin-top:6px;border:1px solid #333}
 .error,.crash,.fault{color:#f66}.warn{color:#fc6}.debug{color:#888}.stderr{color:#f9a}.stdout{color:#aaa}
 </style></head><body>
-<div id="left"><img id="scr" alt="no screen yet"><div id="cap"></div></div>
+<div id="left"><div id="screens"><img id="scr" alt="no screen yet"><img id="scr-tv" alt="no external screen yet"></div><div id="cap"></div></div>
 <div id="right"><div id="status">connecting...</div><div id="log"></div><div id="ev"></div></div>
 <script>
 const esc=s=>String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;');
@@ -280,9 +310,11 @@ async function tick(){
     const st=await (await fetch('/status.json',{cache:'no-store'})).json();
     document.getElementById('status').textContent=
       (st.connected?'CONNECTED ':'disconnected ')+(st.device||'?')+' @ '+(st.device_ip||'?')+
-      '  fps '+st.fps+'  last seen '+fmt(st.last_seen)+'  screen ['+(st.latest_screen||'')+']'+
+      '  fps '+st.fps+'  ext_fps '+(st.external_fps||0)+'  last seen '+fmt(st.last_seen)+
+      '  screen ['+(st.latest_screen||'')+']'+(st.latest_external_screen?'  tv ['+st.latest_external_screen+']':'')+
       '  bonjour '+st.bonjour+(st.last_error?'\\nlast error: '+st.last_error.msg:'');
     if(st.counts&&st.counts.screen){document.getElementById('scr').src='/screen/latest.jpg?n='+st.counts.screen;}
+    if(st.counts&&st.counts.external_screen){const tv=document.getElementById('scr-tv');tv.style.display='block';tv.src='/screen/latest-external.jpg?n='+st.counts.external_screen;}
     const t=await (await fetch('/tail.json?n=400',{cache:'no-store'})).json();
     L.innerHTML=t.logs.map(l=>'<div class="'+esc(l.level||'')+'">'+fmt(l.ts)+' '+esc(l.level||'')+' '+
       (l.file?esc(l.file)+':'+(l.line||'')+' ':'')+esc(l.msg||'')+'</div>').join('');
@@ -381,7 +413,8 @@ class Handler(BaseHTTPRequestHandler):
             if not body:
                 self._reply(400, b"empty", "text/plain")
                 return
-            st.add_screen(body, self.headers.get("X-Screen-Name"), ip, self.headers.get("X-Device"))
+            st.add_screen(body, self.headers.get("X-Screen-Name"), ip,
+                          self.headers.get("X-Device"), self.headers.get("X-Screen-Role"))
         else:
             st.add_frame(body, self.headers.get("X-Frame-Label"), ip)
         self._reply(204)
@@ -418,6 +451,13 @@ class Handler(BaseHTTPRequestHandler):
                 latest = st.latest_screen
             if latest is None:
                 self._reply(404, b"no screen yet", "text/plain")
+            else:
+                self._reply(200, latest[0], "image/jpeg", {"Cache-Control": "no-store"})
+        elif path == "/screen/latest-external.jpg":
+            with st.lock:
+                latest = st.latest_external_screen
+            if latest is None:
+                self._reply(404, b"no external screen yet", "text/plain")
             else:
                 self._reply(200, latest[0], "image/jpeg", {"Cache-Control": "no-store"})
         elif path == "/":
