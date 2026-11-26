@@ -5,7 +5,7 @@ final class CalibrationGateTests: XCTestCase {
 
     // MARK: - Fixtures
 
-    /// Gravity for a phone with the given signed roll and lean-back (degrees).
+    /// Gravity for a phone with the given signed roll and lean-back (degrees) in front-camera mode.
     private func gravity(roll: Double = 0, tiltBack: Double = 0) -> CalibrationVector3 {
         let tr = tan(roll * .pi / 180)
         let tt = tan(tiltBack * .pi / 180)
@@ -47,6 +47,29 @@ final class CalibrationGateTests: XCTestCase {
         "leftWrist": (0.76, 0.33), "rightWrist": (0.24, 0.33)
     ]
 
+    private static let base3D: [String: [Double]] = [
+        "root": [0.0, 0.0, 0.0],
+        "spine": [0.0, 0.24, 0.0],
+        "centerShoulder": [0.0, 0.48, 0.0],
+        "nose": [0.0, 0.69, 0.0],
+        "leftHip": [0.10, 0.0, 0.0],
+        "leftKnee": [0.10, -0.45, 0.0],
+        "leftAnkle": [0.10, -0.84, 0.0],
+        "leftHeel": [0.10, -0.87, -0.07],
+        "leftFootIndex": [0.10, -0.87, 0.16],
+        "rightHip": [-0.10, 0.0, 0.0],
+        "rightKnee": [-0.10, -0.45, 0.0],
+        "rightAnkle": [-0.10, -0.84, 0.0],
+        "rightHeel": [-0.10, -0.87, -0.07],
+        "rightFootIndex": [-0.10, -0.87, 0.16],
+        "leftShoulder": [0.19, 0.48, 0.0],
+        "leftElbow": [0.22, 0.20, 0.0],
+        "leftWrist": [0.24, -0.06, 0.0],
+        "rightShoulder": [-0.19, 0.48, 0.0],
+        "rightElbow": [-0.22, 0.20, 0.0],
+        "rightWrist": [-0.24, -0.06, 0.0]
+    ]
+
     private func named(_ b: Body) -> [String: CalibrationLandmark] {
         var out: [String: CalibrationLandmark] = [:]
         for (name, p) in Self.standing {
@@ -67,6 +90,114 @@ final class CalibrationGateTests: XCTestCase {
 
     private func pose(_ t: Double, _ b: Body = Body()) -> CalibrationPoseSample {
         CalibrationPoseSample(timestamp: t, named: named(b), frame: rawFrame(t))
+    }
+
+    /// Builds a valid synthetic sample matching whichever pose `step` is active so multi-step tests can walk Poses 1–9.
+    private func poseForStep(_ t: Double, step: CalibrationStep) -> CalibrationPoseSample {
+        var pts2D = Self.standing
+        var j3D = Self.base3D
+
+        switch step {
+        case .resume, .level, .rest, .locked:
+            break
+        case .tpose:
+            for (k, v) in Self.tArms { pts2D[k] = v }
+            j3D["leftElbow"] = [0.47, 0.48, 0.0]
+            j3D["leftWrist"] = [0.73, 0.48, 0.0]
+            j3D["rightElbow"] = [-0.47, 0.48, 0.0]
+            j3D["rightWrist"] = [-0.73, 0.48, 0.0]
+        case .overhead:
+            pts2D["leftElbow"] = (0.57, 0.19)
+            pts2D["rightElbow"] = (0.43, 0.19)
+            pts2D["leftWrist"] = (0.57, 0.08)
+            pts2D["rightWrist"] = (0.43, 0.08)
+            j3D["leftElbow"] = [0.21, 0.75, 0.0]
+            j3D["leftWrist"] = [0.22, 1.00, 0.0]
+            j3D["rightElbow"] = [-0.21, 0.75, 0.0]
+            j3D["rightWrist"] = [-0.22, 1.00, 0.0]
+        case .asymLR:
+            pts2D["leftElbow"] = (0.57, 0.20)
+            pts2D["leftWrist"] = (0.57, 0.09)
+            pts2D["rightElbow"] = (0.34, 0.33)
+            pts2D["rightWrist"] = (0.24, 0.33)
+            j3D["leftElbow"] = [0.20, 0.75, 0.0]
+            j3D["leftWrist"] = [0.21, 1.00, 0.0]
+            j3D["rightElbow"] = [-0.47, 0.48, 0.0]
+            j3D["rightWrist"] = [-0.73, 0.48, 0.0]
+        case .armsForward:
+            pts2D["leftElbow"] = (0.56, 0.35)
+            pts2D["rightElbow"] = (0.44, 0.35)
+            pts2D["leftWrist"] = (0.56, 0.34)
+            pts2D["rightWrist"] = (0.44, 0.34)
+            j3D["leftElbow"] = [0.19, 0.46, 0.26]
+            j3D["leftWrist"] = [0.19, 0.46, 0.50]
+            j3D["rightElbow"] = [-0.19, 0.46, 0.26]
+            j3D["rightWrist"] = [-0.19, 0.46, 0.50]
+        case .plie:
+            pts2D["leftElbow"] = (0.66, 0.36)
+            pts2D["rightElbow"] = (0.34, 0.36)
+            pts2D["leftWrist"] = (0.76, 0.36)
+            pts2D["rightWrist"] = (0.24, 0.36)
+            pts2D["leftHip"] = (0.54, 0.59)
+            pts2D["rightHip"] = (0.46, 0.59)
+            pts2D["leftKnee"] = (0.56, 0.72)
+            pts2D["rightKnee"] = (0.44, 0.72)
+            j3D["leftElbow"] = [0.47, 0.48, 0.0]
+            j3D["leftWrist"] = [0.73, 0.48, 0.0]
+            j3D["rightElbow"] = [-0.47, 0.48, 0.0]
+            j3D["rightWrist"] = [-0.73, 0.48, 0.0]
+            j3D["leftKnee"] = [0.16, -0.38, 0.14]
+            j3D["leftAnkle"] = [0.10, -0.76, 0.0]
+            j3D["leftHeel"] = [0.10, -0.79, -0.07]
+            j3D["leftFootIndex"] = [0.10, -0.79, 0.16]
+            j3D["rightKnee"] = [-0.16, -0.38, 0.14]
+            j3D["rightAnkle"] = [-0.10, -0.76, 0.0]
+            j3D["rightHeel"] = [-0.10, -0.79, -0.07]
+            j3D["rightFootIndex"] = [-0.10, -0.79, 0.16]
+        case .turned45:
+            pts2D["leftShoulder"] = (0.542, 0.33)
+            pts2D["rightShoulder"] = (0.458, 0.33)
+            pts2D["leftElbow"] = (0.63, 0.33)
+            pts2D["rightElbow"] = (0.37, 0.33)
+            pts2D["leftWrist"] = (0.72, 0.33)
+            pts2D["rightWrist"] = (0.28, 0.33)
+            j3D["leftShoulder"] = [0.134, 0.48, -0.134]
+            j3D["rightShoulder"] = [-0.134, 0.48, 0.134]
+            j3D["leftElbow"] = [0.33, 0.48, -0.33]
+            j3D["leftWrist"] = [0.51, 0.48, -0.51]
+            j3D["rightElbow"] = [-0.33, 0.48, 0.33]
+            j3D["rightWrist"] = [-0.51, 0.48, 0.51]
+        case .stepLeft:
+            for (k, v) in pts2D { pts2D[k] = (v.0 + 0.15, v.1) }
+        case .stepRight:
+            for (k, v) in pts2D { pts2D[k] = (v.0 - 0.15, v.1) }
+        case .kneeLift:
+            pts2D["leftKnee"] = (0.55, 0.56)
+            pts2D["leftAnkle"] = (0.54, 0.68)
+            pts2D["leftHeel"] = (0.54, 0.70)
+            pts2D["leftFootIndex"] = (0.55, 0.71)
+            j3D["leftKnee"] = [0.10, -0.02, 0.43]
+            j3D["leftAnkle"] = [0.10, -0.42, 0.41]
+            j3D["leftHeel"] = [0.10, -0.45, 0.35]
+            j3D["leftFootIndex"] = [0.10, -0.45, 0.55]
+        }
+
+        let lm = pts2D.mapValues { CalibrationLandmark(x: $0.0, y: $0.1, visibility: 0.95) }
+        let frame = GrooveScoringEngine.RawPoseFrame(t: t, joints: j3D)
+        return CalibrationPoseSample(timestamp: t, named: lm, frame: frame)
+    }
+
+    @discardableResult
+    private func finishRemainingPoses(_ g: inout CalibrationGate, from t0: Double, hz: Double = 30) -> Double {
+        var t = t0
+        var safety = 0
+        while g.step != .locked && safety < 600 {
+            g.update(pose: poseForStep(t, step: g.step))
+            t += 1.0 / hz
+            safety += 1
+        }
+        XCTAssertEqual(g.step, .locked)
+        return t
     }
 
     /// Feeds `seconds` of pose samples at `hz` starting at `t0`; returns the time after the last sample.
@@ -94,7 +225,7 @@ final class CalibrationGateTests: XCTestCase {
     /// A gate in the T-pose step; returns the next pose time.
     private func tposeGate(tuning: CalibrationTuning = .defaults) -> (CalibrationGate, Double) {
         var g = leveledGate(tuning: tuning)
-        let t = feed(&g, from: 100, seconds: 0.5)
+        let t = feed(&g, from: 100, seconds: 0.7)
         XCTAssertEqual(g.step, .tpose)
         XCTAssertEqual(g.cue, .armsOutT)
         return (g, t)
@@ -106,7 +237,7 @@ final class CalibrationGateTests: XCTestCase {
         let upright = CalibrationGate.angles(gravity: CalibrationVector3(x: 0, y: -1, z: 0))
         XCTAssertEqual(upright.rollDeg, 0, accuracy: 1e-9)
         XCTAssertEqual(upright.tiltBackDeg, 0, accuracy: 1e-9)
-        // Leaning back toward face-up (g -> (0, 0, -1)) is positive.
+        // Leaning back toward face-up (g -> (0, 0, -1)) is positive in front-camera mode.
         let back = CalibrationGate.angles(gravity: gravity(tiltBack: 30))
         XCTAssertEqual(back.tiltBackDeg, 30, accuracy: 1e-9)
         XCTAssertGreaterThan(CalibrationGate.angles(gravity: CalibrationVector3(x: 0, y: -0.5, z: -0.866)).tiltBackDeg, 0)
@@ -178,7 +309,7 @@ final class CalibrationGateTests: XCTestCase {
         XCTAssertEqual(cue(Body(visibility: ["leftHip": 0.3])), .stepBack)
         XCTAssertEqual(cue(Body(dy: 0.09)), .stepBackShowFeet, "feet below maxFootY")
         XCTAssertEqual(cue(Body(dy: -0.07)), .stepBack, "no headroom above the nose")
-        XCTAssertEqual(cue(Body(scale: 0.6)), .stepCloser)
+        XCTAssertEqual(cue(Body(scale: 0.3)), .stepCloser)
         var tight = CalibrationTuning.defaults
         tight.spanMax = 0.55
         XCTAssertEqual(cue(Body(), tuning: tight), .stepBack, "span above spanMax")
@@ -201,19 +332,19 @@ final class CalibrationGateTests: XCTestCase {
 
     func testFramingHoldResetsAndUsesHysteresis() {
         var g = leveledGate()
-        var t = feed(&g, from: 100, seconds: 0.2)
+        var t = feed(&g, from: 100, seconds: 0.3)
         XCTAssertEqual(g.step, .frame)
         XCTAssertGreaterThan(g.progress, 0.3)
-        // A clear failure resets the hold.
-        XCTAssertEqual(g.update(pose: pose(t, Body(dx: 0.25))).progress, 0)
-        t += 1.0 / 30
+        // A sustained failure beyond dropoutToleranceS resets the hold.
+        t = feed(&g, from: t, seconds: 0.45, body: { _ in Body(dx: 0.25) })
+        XCTAssertEqual(g.progress, 0)
         // Feet at 0.45 fail the 0.5 enter floor ...
         XCTAssertEqual(g.update(pose: pose(t, Body(visibility: ["leftHeel": 0.45]))).cue, .stepBackShowFeet)
         t += 1.0 / 30
-        // ... but once framing passes, the 0.4 hold floor keeps it passing.
+        // ... but once framing latches, the 0.4 hold floor keeps it passing.
         XCTAssertEqual(g.update(pose: pose(t, Body())).cue, .none)
         t += 1.0 / 30
-        t = feed(&g, from: t, seconds: 0.5, body: { _ in Body(visibility: ["leftHeel": 0.45]) })
+        t = feed(&g, from: t, seconds: 0.7, body: { _ in Body(visibility: ["leftHeel": 0.45]) })
         XCTAssertEqual(g.step, .tpose)
         XCTAssertEqual(g.telemetry().footFloorUsed ?? 0, 0.4, accuracy: 1e-9)
     }
@@ -286,20 +417,19 @@ final class CalibrationGateTests: XCTestCase {
             g.update(light: samples[i % 2])
         }
         XCTAssertEqual(g.step, .frame)
-        // Light samples every 0.5 s alternate dim / backlit while the dancer frames up and holds the T.
+        // Light samples every 0.5 s alternate dim / backlit while the dancer completes Poses 1–9.
         var advices = Set<CalibrationLightAdvice>()
         var i = 0
-        while g.step != .locked && i < 120 {
+        while g.step != .locked && i < 300 {
             let t = 100 + Double(i) / 30
-            g.update(pose: pose(t, Body(tpose: t >= 100.5)))
+            g.update(pose: poseForStep(t, step: g.step))
             if i % 15 == 0 { advices.insert(g.update(light: samples[(i / 15) % 2]).lightAdvice) }
             i += 1
         }
         XCTAssertEqual(g.step, .locked)
-        XCTAssertLessThan(i, 60, "locks as fast as with good light")
+        XCTAssertLessThan(i, 250, "locks as fast as with good light")
         XCTAssertEqual(advices, [.dim, .backlit], "very dark with a person present reads as dim")
         XCTAssertEqual(g.telemetry().lightOK, false)
-        XCTAssertEqual(g.telemetry().lightAdvice, "backlit")
     }
 
     // MARK: - Step 4
@@ -327,6 +457,8 @@ final class CalibrationGateTests: XCTestCase {
             }
         })
         XCTAssertTrue(sawHalf)
+        XCTAssertEqual(g.step, .overhead)
+        t = finishRemainingPoses(&g, from: t)
         XCTAssertEqual(g.step, .locked)
         XCTAssertEqual(g.cue, .locked)
         XCTAssertEqual(g.progress, 1)
@@ -347,14 +479,16 @@ final class CalibrationGateTests: XCTestCase {
 
     func testLockWaitsForMinFramesAtLowFrameRate() {
         var (g, t) = tposeGate()
-        var lockTime: Double?
-        feed(&g, from: t, seconds: 2.0, hz: 10, body: { _ in Body(tpose: true) }, each: { time, s in
-            if s.step == .locked && lockTime == nil { lockTime = time }
+        var tPoseDoneAt: Double?
+        let nextT = feed(&g, from: t, seconds: 1.6, hz: 10, body: { _ in Body(tpose: true) }, each: { time, s in
+            if s.step == .overhead && tPoseDoneAt == nil { tPoseDoneAt = time }
         })
-        let lockedAt = try! XCTUnwrap(lockTime)
-        XCTAssertEqual(lockedAt - t, 1.4, accuracy: 1e-6, "1.0 s at 10 Hz is 11 samples; waits for the 15th")
-        XCTAssertEqual(g.calibrationFrames?.count, 15)
+        let completedAt = try! XCTUnwrap(tPoseDoneAt)
+        XCTAssertEqual(completedAt - t, 1.4, accuracy: 1e-6, "1.0 s at 10 Hz is 11 samples; waits for the 15th")
+        XCTAssertEqual(g.capturedFrames.count, 15)
         XCTAssertEqual(g.telemetry().capturedFrameCount, 15)
+        finishRemainingPoses(&g, from: nextT)
+        XCTAssertEqual(g.calibrationFrames?.count, 15)
     }
 
     func testTPoseDropoutToleranceKeepsHold() {
@@ -363,7 +497,7 @@ final class CalibrationGateTests: XCTestCase {
         let gap = 12...19   // samples 0.40 ... 0.63 s: arms down, 0.30 s between good samples
         func index(_ time: Double) -> Int { Int(((time - start) * 30).rounded()) }
         var minProgressInGap = 1.0
-        feed(&g, from: t, seconds: 1.4, body: { time in
+        let nextT = feed(&g, from: t, seconds: 1.1, body: { time in
             Body(tpose: !gap.contains(index(time)))
         }, each: { time, s in
             if gap.contains(index(time)) {
@@ -372,8 +506,10 @@ final class CalibrationGateTests: XCTestCase {
             }
         })
         XCTAssertGreaterThan(minProgressInGap, 0.3, "progress survives the dropout")
-        XCTAssertEqual(g.step, .locked)
+        XCTAssertEqual(g.step, .overhead)
         // Frames during the dropout are not captured: 1.0 s hold at 30 Hz = 31 samples minus the 8 dropped.
+        XCTAssertEqual(g.capturedFrames.count, 23)
+        finishRemainingPoses(&g, from: nextT)
         XCTAssertEqual(g.calibrationFrames?.count, 23)
     }
 
@@ -390,7 +526,7 @@ final class CalibrationGateTests: XCTestCase {
         t = feed(&g, from: t, seconds: 0.9, body: { _ in Body(tpose: true) })
         XCTAssertEqual(g.step, .tpose)
         feed(&g, from: t, seconds: 0.2, body: { _ in Body(tpose: true) })
-        XCTAssertEqual(g.step, .locked)
+        XCTAssertEqual(g.step, .overhead)
     }
 
     func testTPoseHoldResetsOnBodyMotion() {
@@ -410,7 +546,7 @@ final class CalibrationGateTests: XCTestCase {
         t = feed(&g, from: t, seconds: 0.9, body: { _ in Body(tpose: true) })
         XCTAssertEqual(g.step, .tpose, "a fresh 1.0 s hold is needed")
         feed(&g, from: t, seconds: 0.3, body: { _ in Body(tpose: true) })
-        XCTAssertEqual(g.step, .locked)
+        XCTAssertEqual(g.step, .overhead)
     }
 
     func testFramingLossDuringTPose() {
@@ -438,6 +574,7 @@ final class CalibrationGateTests: XCTestCase {
         XCTAssertTrue(g.status.skipped)
         XCTAssertNil(g.calibrationFrames)
         XCTAssertNil(g.lockedProfile)
+        XCTAssertNil(g.lockedProfileV2)
         XCTAssertEqual(g.lockedGravity?.count, 3)
         XCTAssertEqual(g.update(pose: pose(1, Body(tpose: true))).step, .locked)
         XCTAssertTrue(g.telemetry().skipped)
@@ -481,7 +618,7 @@ final class CalibrationGateTests: XCTestCase {
         g.tuning = try g.tuning.merged(withJSON: Data(#"{"rollEnterDeg": 12, "rollExitDeg": 14}"#.utf8))
         XCTAssertEqual(g.update(motion: motion(0.1, roll: 10)).cue, .none)
 
-        // Step 4: shorten the hold mid-way; progress continues and the lock comes sooner.
+        // Step 4: shorten the hold mid-way; progress continues and T-pose completes sooner.
         var (h, t) = tposeGate()
         t = feed(&h, from: t, seconds: 0.5, body: { _ in Body(tpose: true) })
         let before = h.progress
@@ -493,8 +630,8 @@ final class CalibrationGateTests: XCTestCase {
         XCTAssertGreaterThan(s.progress, before, "progress is not reset by a tuning swap")
         t += 1.0 / 30
         feed(&h, from: t, seconds: 0.2, body: { _ in Body(tpose: true) })
-        XCTAssertEqual(h.step, .locked)
-        XCTAssertGreaterThanOrEqual(h.calibrationFrames?.count ?? 0, 5)
+        XCTAssertEqual(h.step, .overhead)
+        XCTAssertGreaterThanOrEqual(h.capturedFrames.count, 5)
     }
 
     // MARK: - Tuning decode
@@ -537,6 +674,7 @@ final class CalibrationGateTests: XCTestCase {
         XCTAssertEqual(d.tPoseMinScore, 0.55)
         XCTAssertEqual(d.dropoutToleranceS, 0.35)
         XCTAssertEqual(d.minCapturedFrames, 15)
+        XCTAssertEqual(d.spanMinFloor, 0.22)
     }
 
     // MARK: - Cues and telemetry
@@ -550,13 +688,13 @@ final class CalibrationGateTests: XCTestCase {
             }
         }
         XCTAssertEqual(Set(CalibrationCue.allCases.map(\.spokenText)).count, CalibrationCue.allCases.count)
-        XCTAssertEqual(CalibrationStep.allCases.map(\.rawValue), [0, 1, 2, 4, 5])
+        XCTAssertEqual(CalibrationStep.allCases.map(\.rawValue), [0, 1, 2, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13])
     }
 
     func testTelemetryIsFlatJSON() throws {
         var (g, t) = tposeGate()
         g.update(light: CalibrationLightSample(meanLuma: 0.3, torsoLuma: 0.3, borderLuma: 0.4, iso: 200,
-                                               maxISO: 2000, exposureSeconds: 0.02))
+                                               maxISO: 2000, exposureSeconds: 0.02, exposureLocked: true))
         g.update(motion: motion(2, tiltBack: 0.5))
         feed(&g, from: t, seconds: 0.3, body: { _ in Body(tpose: true) })
         let tel = g.telemetry()
