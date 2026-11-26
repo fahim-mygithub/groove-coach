@@ -7,12 +7,15 @@ import UIKit
 
 @main
 struct GrooveCoachApp: App {
+    @UIApplicationDelegateAdaptor(ExternalDisplayAppDelegate.self) private var appDelegate
     @StateObject private var library = GrooveLibrary()
     @StateObject private var lessonStore = LessonStore.shared
+    @StateObject private var externalDisplay = ExternalDisplayManager.shared
 
     init() {
         // Debug Link: log/stdout capture, crash marker, server discovery and screen sharing (on by default).
         DebugLink.shared.start()
+        ExternalDisplayManager.shared.start()
     }
 
     var body: some Scene {
@@ -30,6 +33,7 @@ struct GrooveCoachApp: App {
             }
             .environmentObject(library)
             .environmentObject(lessonStore)
+            .environmentObject(externalDisplay)
         }
     }
 }
@@ -79,12 +83,14 @@ struct CalibrationOnboardingView: View {
     @State private var bpm: Double = 110.0
 
     @EnvironmentObject private var library: GrooveLibrary
+    @ObservedObject private var externalDisplay = ExternalDisplayManager.shared
     private var references: [String: GrooveScoringEngine.PoseClip] { library.references }
     private var calibrationClips: [GrooveScoringEngine.PoseClip] { library.calibrationClips }
     @State private var calibrationReport: GrooveScoringEngine.CalibrationReport?
     @State private var exportedBundleURL: URL?
 
     @State private var statusText: String = "Step 1: Import reference clips (`down_bounce`, `house_jack`), then ingest your ~20 calibration clips."
+    @State private var studioStatusText: String?
     private let poseTrackingAvailable = MediaPipePoseProvider.isAvailable
     @State private var measuredFps: Double = 0.0
 
@@ -93,6 +99,8 @@ struct CalibrationOnboardingView: View {
     var body: some View {
         NavigationStack {
             Form {
+                tvStudioSection
+
                 Section("1. Next 20-Second Clip to Ingest") {
                     TextField("Clip ID", text: $clipId)
                         .textInputAutocapitalization(.never)
@@ -199,10 +207,112 @@ struct CalibrationOnboardingView: View {
             }
             .navigationTitle("Groove Calibration")
             .onAppear {
+                externalDisplay.refreshAudioRouteMetrics()
                 if motionManager.isDeviceMotionAvailable {
                     motionManager.deviceMotionUpdateInterval = 1.0 / 60.0
                     motionManager.startDeviceMotionUpdates()
                 }
+            }
+            .onDisappear {
+                externalDisplay.stopSyncProbe()
+                externalDisplay.stopSpikeRearPreview()
+            }
+        }
+    }
+
+    private var tvStudioSection: some View {
+        Section("Studio Setup & AirPlay TV Stage") {
+            HStack {
+                Label(
+                    externalDisplay.isConnected ? "TV Stage Connected" : "Phone Self-View Mode",
+                    systemImage: externalDisplay.isConnected ? "tv.badge.wifi" : "iphone"
+                )
+                .foregroundStyle(externalDisplay.isConnected ? .green : .secondary)
+                Spacer()
+                Text(externalDisplay.isConnected ? externalDisplay.externalResolution : "No AirPlay TV")
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.secondary)
+            }
+
+            HStack {
+                Text("Audio Route")
+                Spacer()
+                Text("\(externalDisplay.audioRouteSummary) · \(String(format: "%.0f ms", externalDisplay.outputLatencyMs))")
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.trailing)
+            }
+
+            Button {
+                let handled = externalDisplay.requestRecalibrateStudio()
+                studioStatusText = handled
+                    ? "Full 9-pose studio recalibration requested."
+                    : "Studio recalibration queued; start a Practice or Lesson take to run calibration."
+            } label: {
+                Label("Recalibrate Studio", systemImage: "camera.metering.center.weighted")
+            }
+
+            if let clapSync = externalDisplay.clapSyncAction {
+                Button {
+                    clapSync()
+                } label: {
+                    Label("Sync TV Audio", systemImage: "hands.clap.fill")
+                }
+            }
+
+            Button {
+                externalDisplay.toggleSyncProbe()
+            } label: {
+                Label(
+                    externalDisplay.isSyncProbeRunning
+                        ? "Stop Flash+Click Sync Probe (#\(externalDisplay.probeIndex))"
+                        : "Start Beat-4 Flash+Click Sync Probe",
+                    systemImage: externalDisplay.isSyncProbeRunning ? "stop.circle.fill" : "metronome.fill"
+                )
+            }
+
+            Stepper(
+                value: Binding(
+                    get: { externalDisplay.tvVideoLeadOffsetMs },
+                    set: { externalDisplay.commitTVVideoLeadOffsetMs($0) }
+                ),
+                in: -250.0...500.0,
+                step: 5.0
+            ) {
+                HStack {
+                    Text("TV Video Lead")
+                    Spacer()
+                    Text(String(format: "%+.0f ms", externalDisplay.tvVideoLeadOffsetMs))
+                        .font(.subheadline.monospacedDigit())
+                }
+            }
+
+            if externalDisplay.tvVideoLeadOffsetMs != 0.0 {
+                Button("Reset TV Video Lead to 0 ms") {
+                    externalDisplay.commitTVVideoLeadOffsetMs(0.0)
+                }
+                .font(.caption)
+            }
+
+            Toggle(
+                "Spike Rear-Camera Preview on TV",
+                isOn: Binding(
+                    get: { externalDisplay.isSpikeRearPreviewRunning },
+                    set: { externalDisplay.setSpikeRearPreviewEnabled($0) }
+                )
+            )
+
+            if externalDisplay.isSpikeRearPreviewRunning {
+                Toggle("Mirror Rear Preview on TV", isOn: $externalDisplay.spikeRearPreviewMirrored)
+                Text(externalDisplay.spikeConnectionDiagnostics)
+                    .font(.caption2.monospaced())
+                    .foregroundStyle(.secondary)
+            }
+
+            if let studioStatusText {
+                Text(studioStatusText)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
             }
         }
     }
