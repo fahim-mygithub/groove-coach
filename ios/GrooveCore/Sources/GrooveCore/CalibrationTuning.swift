@@ -3,8 +3,9 @@ import Foundation
 /// Every threshold `CalibrationGate` uses, in one live-swappable value (app-only; no Python parity).
 ///
 /// Defaults are the numbers of `docs/research/2026-11-18-calibration-research.md` ("Recommended calibration
-/// sequence"). Values marked (inference) there are starting points to tune from device logs: the app polls the
-/// debug-link server's `tuning.json` and assigns `CalibrationGate.tuning` without a rebuild.
+/// sequence") and `docs/specs/2026-11-26-calibration-v2-plan.md` (§7.2). Values marked (inference) there are
+/// starting points to tune from device logs: the app polls the debug-link server's `tuning.json` and assigns
+/// `CalibrationGate.tuning` without a rebuild.
 ///
 /// JSON keys are the Swift property names. Decoding is partial: a missing (or `null`) key keeps its default, so a
 /// `tuning.json` that sets one key works. Unknown keys and keys starting with `_` (e.g. `_comment`) are ignored.
@@ -52,7 +53,7 @@ public struct CalibrationTuning: Codable, Equatable, Sendable {
     public var maxFootY: Double
     /// `nose.y` must be at least this (headroom for raised wrists). (inference)
     public var minNoseY: Double
-    /// Body size `span = maxFootY - nose.y` window (runform ships 0.42-0.82). (inference)
+    /// Legacy v1 body size `span = maxFootY - nose.y` floor (`0.45`); superseded in v2 by `spanMinFloor` (§7.2).
     public var spanMin: Double
     public var spanMax: Double
     /// Hip midpoint `x` window (Ashrium, runform).
@@ -108,7 +109,92 @@ public struct CalibrationTuning: Codable, Equatable, Sendable {
     /// Good samples needed before locking, so the bone medians are stable. (inference)
     public var minCapturedFrames: Int
 
-    /// The report's numbers.
+    // MARK: Calibration v2 - studio distance, coupled span, LiDAR, AE lock & 9-pose holds (§7.2)
+
+    /// Hard minimum 2D `maxFootY - nose.y` floor across 2–4 m before FoV/LiDAR coupling (§3.5, §7.2). (inference)
+    public var spanMinFloor: Double
+    /// Ratio `(h_nose - h_heel) / H_dancer` (`baby.py` 1.15 crown rule) used in pinhole `span_expected` (§3.2, §3.5).
+    public var noseToFootHeightRatio: Double
+    /// Relative `±` window around `span_expected` when coupling 2D `span` to LiDAR/FoV (§3.5). (inference)
+    public var spanDepthToleranceRatio: Double
+    /// Baseline minimum LiDAR torso distance (m) before FoV floor `d_geom_min` (§3.2).
+    public var lidarMinDistanceM: Double
+    /// Maximum LiDAR torso distance (m; §3.5).
+    public var lidarMaxDistanceM: Double
+    /// Hysteresis widening (m) on LiDAR distance once passing (§3.5). (inference)
+    public var lidarDistanceStayDeltaM: Double
+    /// Relaxed-mode (`15 s`) widening (m) on LiDAR distance bounds, clamped to `>= 2.0 m` (§3.5). (inference)
+    public var lidarDistanceRelaxDeltaM: Double
+    /// Lateral margin (m) added to `wingspanM` in portrait horizontal FoV floor `d_horiz_min` (§3.2). (inference)
+    public var lateralStepMarginM: Double
+    /// Tighter Pose 1 (`.rest`) min `hipCenterX` in Tier-2 full calibration (§2.2, §7.2). (inference)
+    public var restHipCenterMinX: Double
+    /// Tighter Pose 1 (`.rest`) max `hipCenterX` in Tier-2 full calibration (§2.2, §7.2). (inference)
+    public var restHipCenterMaxX: Double
+    /// Max LiDAR camera-height change (m) allowed for Tier-0 resume (§6.2). (inference)
+    public var resumeFloorHeightDeltaM: Double
+    /// Max LiDAR floor-normal change (deg) allowed for Tier-0 resume (§6.2). (inference)
+    public var resumeFloorAngleDeg: Double
+    /// Max LiDAR dancer-height delta (m) to reuse `body` in Tier-1 (§6.2). (inference)
+    public var sameDancerHeightDeltaM: Double
+    /// Low-camera non-blocking advisory threshold (m; Dina `50–70 cm`, §3.4).
+    public var cameraHeightMinM: Double
+    /// High-camera non-blocking advisory threshold (m; §3.4). (inference)
+    public var cameraHeightMaxM: Double
+    /// Max locked shutter duration (s) before custom ISO boost (`1/60 s`, §3.3). (inference)
+    public var exposureMaxShutterS: Double
+    /// Between-take luma drift triggering AE/AWB re-meter (§3.3). (inference)
+    public var remeterLumaDelta: Double
+    /// Hold duration (s) for Pose 1 (`.rest`, §2.2). (inference)
+    public var restHoldS: Double
+    /// Hold duration (s) for Pose 3 (`.overhead`, §2.2). (inference)
+    public var overheadHoldS: Double
+    /// Min `(nose.y - wrist.y) / span` for Pose 3 (`.overhead`, §2.2).
+    public var overheadMinWristAboveNose: Double
+    /// Top-edge clipping guard (`y >= overheadMinTopMarginY`) for raised wrists in `.overhead` (§2.2). (inference)
+    public var overheadMinTopMarginY: Double
+    /// Min interior elbow extension angle (deg) in Pose 3 (`.overhead`, §2.2). (inference)
+    public var overheadMinElbowDeg: Double
+    /// Hold duration (s) for Pose 4 (`.asymLR`, §2.2). (inference)
+    public var asymHoldS: Double
+    /// Min horizontal right-wrist reach in shoulder widths in Pose 4 (`.asymLR`, §2.2). (inference)
+    public var asymMinSideReachShoulders: Double
+    /// Hold duration (s) for Pose 5 (`.armsForward`, §2.2). (inference)
+    public var forwardHoldS: Double
+    /// Min canonical & LiDAR shoulder-to-wrist forward Z delta (m) in Pose 5 (`.armsForward`, §2.2). (inference)
+    public var forwardMinDeltaZM: Double
+    /// Hold duration (s) for Pose 6 (`.plie`, §2.2). (inference)
+    public var plieHoldS: Double
+    /// Min exterior `mean_knee_flex` (deg) in Pose 6 (`.plie`, §2.2). (inference)
+    public var plieMinKneeFlexDeg: Double
+    /// Min `hip_height_norm` drop below `.rest` in Pose 6 (`.plie`, §2.2). (inference)
+    public var plieMinHipDropNorm: Double
+    /// Hold duration (s) for Pose 7 (`.turned45`, §2.2). (inference)
+    public var turnedHoldS: Double
+    /// Min 3D shoulder XZ yaw angle (deg) in Pose 7 (`.turned45`, §2.2). (inference)
+    public var turnedMinYawDeg: Double
+    /// Max 3D shoulder XZ yaw angle (deg) before profile occlusion in Pose 7 (`.turned45`, §2.2). (inference)
+    public var turnedMaxYawDeg: Double
+    /// Edge-on 2D shoulder-collapse floor `|ls.x - rs.x|` (`checkup.ts:151`, §2.2).
+    public var turnedMinShoulderWidth2D: Double
+    /// Hold duration (s) per lateral step side (`.stepLeft`, `.stepRight`, §2.2). (inference)
+    public var stepHoldS: Double
+    /// Min normalized horizontal hip shift from `.rest` center in Pose 8 (`stepLR`, §2.2). (inference)
+    public var stepMinHipShiftX: Double
+    /// Dropout tolerance (s) during lateral step weight transfer in Pose 8 (`stepLR`, §2.2). (inference)
+    public var stepDropoutS: Double
+    /// Hold duration (s) for Pose 9 (`.kneeLift`, §2.2). (inference)
+    public var kneeLiftHoldS: Double
+    /// Min lifted-leg exterior `knee_flex` (deg) in Pose 9 (`.kneeLift`, §2.2). (inference)
+    public var kneeLiftMinFlexDeg: Double
+    /// Min `|la3D.y - ra3D.y| / legScale` in Pose 9 (`.kneeLift`, §2.2). (inference)
+    public var kneeLiftMinAnkleClearance: Double
+    /// Relaxed stillness stay limit for single-leg balance in Pose 9 (`.kneeLift`, §2.2). (inference)
+    public var kneeLiftMotionStayMax: Double
+    /// Dropout tolerance (s) for Pose 9 (`.kneeLift`, §2.2). (inference)
+    public var kneeLiftDropoutS: Double
+
+    /// The report's and v2 plan's numbers.
     public static let defaults = CalibrationTuning(
         resumeGravityDeltaG: 0.05,
         rollEnterDeg: 3.0,
@@ -152,7 +238,48 @@ public struct CalibrationTuning: Codable, Equatable, Sendable {
         motionStayMax: 0.02,
         poseHoldS: 1.0,
         dropoutToleranceS: 0.35,
-        minCapturedFrames: 15
+        minCapturedFrames: 15,
+        spanMinFloor: 0.22,
+        noseToFootHeightRatio: 0.855,
+        spanDepthToleranceRatio: 0.22,
+        lidarMinDistanceM: 2.0,
+        lidarMaxDistanceM: 4.0,
+        lidarDistanceStayDeltaM: 0.25,
+        lidarDistanceRelaxDeltaM: 0.30,
+        lateralStepMarginM: 0.55,
+        restHipCenterMinX: 0.40,
+        restHipCenterMaxX: 0.60,
+        resumeFloorHeightDeltaM: 0.03,
+        resumeFloorAngleDeg: 3.0,
+        sameDancerHeightDeltaM: 0.06,
+        cameraHeightMinM: 0.50,
+        cameraHeightMaxM: 1.50,
+        exposureMaxShutterS: 0.0167,
+        remeterLumaDelta: 0.20,
+        restHoldS: 0.6,
+        overheadHoldS: 0.7,
+        overheadMinWristAboveNose: 0.05,
+        overheadMinTopMarginY: 0.02,
+        overheadMinElbowDeg: 135.0,
+        asymHoldS: 0.7,
+        asymMinSideReachShoulders: 0.80,
+        forwardHoldS: 0.7,
+        forwardMinDeltaZM: 0.25,
+        plieHoldS: 0.8,
+        plieMinKneeFlexDeg: 22.0,
+        plieMinHipDropNorm: 0.04,
+        turnedHoldS: 0.7,
+        turnedMinYawDeg: 25.0,
+        turnedMaxYawDeg: 65.0,
+        turnedMinShoulderWidth2D: 0.045,
+        stepHoldS: 0.5,
+        stepMinHipShiftX: 0.12,
+        stepDropoutS: 0.40,
+        kneeLiftHoldS: 0.5,
+        kneeLiftMinFlexDeg: 55.0,
+        kneeLiftMinAnkleClearance: 0.18,
+        kneeLiftMotionStayMax: 0.035,
+        kneeLiftDropoutS: 0.45
     )
 
     public init(
@@ -198,7 +325,48 @@ public struct CalibrationTuning: Codable, Equatable, Sendable {
         motionStayMax: Double,
         poseHoldS: Double,
         dropoutToleranceS: Double,
-        minCapturedFrames: Int
+        minCapturedFrames: Int,
+        spanMinFloor: Double = 0.22,
+        noseToFootHeightRatio: Double = 0.855,
+        spanDepthToleranceRatio: Double = 0.22,
+        lidarMinDistanceM: Double = 2.0,
+        lidarMaxDistanceM: Double = 4.0,
+        lidarDistanceStayDeltaM: Double = 0.25,
+        lidarDistanceRelaxDeltaM: Double = 0.30,
+        lateralStepMarginM: Double = 0.55,
+        restHipCenterMinX: Double = 0.40,
+        restHipCenterMaxX: Double = 0.60,
+        resumeFloorHeightDeltaM: Double = 0.03,
+        resumeFloorAngleDeg: Double = 3.0,
+        sameDancerHeightDeltaM: Double = 0.06,
+        cameraHeightMinM: Double = 0.50,
+        cameraHeightMaxM: Double = 1.50,
+        exposureMaxShutterS: Double = 0.0167,
+        remeterLumaDelta: Double = 0.20,
+        restHoldS: Double = 0.6,
+        overheadHoldS: Double = 0.7,
+        overheadMinWristAboveNose: Double = 0.05,
+        overheadMinTopMarginY: Double = 0.02,
+        overheadMinElbowDeg: Double = 135.0,
+        asymHoldS: Double = 0.7,
+        asymMinSideReachShoulders: Double = 0.80,
+        forwardHoldS: Double = 0.7,
+        forwardMinDeltaZM: Double = 0.25,
+        plieHoldS: Double = 0.8,
+        plieMinKneeFlexDeg: Double = 22.0,
+        plieMinHipDropNorm: Double = 0.04,
+        turnedHoldS: Double = 0.7,
+        turnedMinYawDeg: Double = 25.0,
+        turnedMaxYawDeg: Double = 65.0,
+        turnedMinShoulderWidth2D: Double = 0.045,
+        stepHoldS: Double = 0.5,
+        stepMinHipShiftX: Double = 0.12,
+        stepDropoutS: Double = 0.40,
+        kneeLiftHoldS: Double = 0.5,
+        kneeLiftMinFlexDeg: Double = 55.0,
+        kneeLiftMinAnkleClearance: Double = 0.18,
+        kneeLiftMotionStayMax: Double = 0.035,
+        kneeLiftDropoutS: Double = 0.45
     ) {
         self.resumeGravityDeltaG = resumeGravityDeltaG
         self.rollEnterDeg = rollEnterDeg
@@ -243,6 +411,47 @@ public struct CalibrationTuning: Codable, Equatable, Sendable {
         self.poseHoldS = poseHoldS
         self.dropoutToleranceS = dropoutToleranceS
         self.minCapturedFrames = minCapturedFrames
+        self.spanMinFloor = spanMinFloor
+        self.noseToFootHeightRatio = noseToFootHeightRatio
+        self.spanDepthToleranceRatio = spanDepthToleranceRatio
+        self.lidarMinDistanceM = lidarMinDistanceM
+        self.lidarMaxDistanceM = lidarMaxDistanceM
+        self.lidarDistanceStayDeltaM = lidarDistanceStayDeltaM
+        self.lidarDistanceRelaxDeltaM = lidarDistanceRelaxDeltaM
+        self.lateralStepMarginM = lateralStepMarginM
+        self.restHipCenterMinX = restHipCenterMinX
+        self.restHipCenterMaxX = restHipCenterMaxX
+        self.resumeFloorHeightDeltaM = resumeFloorHeightDeltaM
+        self.resumeFloorAngleDeg = resumeFloorAngleDeg
+        self.sameDancerHeightDeltaM = sameDancerHeightDeltaM
+        self.cameraHeightMinM = cameraHeightMinM
+        self.cameraHeightMaxM = cameraHeightMaxM
+        self.exposureMaxShutterS = exposureMaxShutterS
+        self.remeterLumaDelta = remeterLumaDelta
+        self.restHoldS = restHoldS
+        self.overheadHoldS = overheadHoldS
+        self.overheadMinWristAboveNose = overheadMinWristAboveNose
+        self.overheadMinTopMarginY = overheadMinTopMarginY
+        self.overheadMinElbowDeg = overheadMinElbowDeg
+        self.asymHoldS = asymHoldS
+        self.asymMinSideReachShoulders = asymMinSideReachShoulders
+        self.forwardHoldS = forwardHoldS
+        self.forwardMinDeltaZM = forwardMinDeltaZM
+        self.plieHoldS = plieHoldS
+        self.plieMinKneeFlexDeg = plieMinKneeFlexDeg
+        self.plieMinHipDropNorm = plieMinHipDropNorm
+        self.turnedHoldS = turnedHoldS
+        self.turnedMinYawDeg = turnedMinYawDeg
+        self.turnedMaxYawDeg = turnedMaxYawDeg
+        self.turnedMinShoulderWidth2D = turnedMinShoulderWidth2D
+        self.stepHoldS = stepHoldS
+        self.stepMinHipShiftX = stepMinHipShiftX
+        self.stepDropoutS = stepDropoutS
+        self.kneeLiftHoldS = kneeLiftHoldS
+        self.kneeLiftMinFlexDeg = kneeLiftMinFlexDeg
+        self.kneeLiftMinAnkleClearance = kneeLiftMinAnkleClearance
+        self.kneeLiftMotionStayMax = kneeLiftMotionStayMax
+        self.kneeLiftDropoutS = kneeLiftDropoutS
     }
 
     public enum CodingKeys: String, CodingKey, CaseIterable {
@@ -257,6 +466,19 @@ public struct CalibrationTuning: Codable, Equatable, Sendable {
         case backlightDeltaMin, backlightTorsoLumaMax, veryDarkLumaMax
         case tPoseMinScore, tPoseMinSY, tPoseMinSAng, tPoseMinExtension, tPoseArmMinVisibility
         case motionEnterMax, motionStayMax, poseHoldS, dropoutToleranceS, minCapturedFrames
+        case spanMinFloor, noseToFootHeightRatio, spanDepthToleranceRatio
+        case lidarMinDistanceM, lidarMaxDistanceM, lidarDistanceStayDeltaM, lidarDistanceRelaxDeltaM
+        case lateralStepMarginM, restHipCenterMinX, restHipCenterMaxX
+        case resumeFloorHeightDeltaM, resumeFloorAngleDeg, sameDancerHeightDeltaM
+        case cameraHeightMinM, cameraHeightMaxM, exposureMaxShutterS, remeterLumaDelta
+        case restHoldS
+        case overheadHoldS, overheadMinWristAboveNose, overheadMinTopMarginY, overheadMinElbowDeg
+        case asymHoldS, asymMinSideReachShoulders
+        case forwardHoldS, forwardMinDeltaZM
+        case plieHoldS, plieMinKneeFlexDeg, plieMinHipDropNorm
+        case turnedHoldS, turnedMinYawDeg, turnedMaxYawDeg, turnedMinShoulderWidth2D
+        case stepHoldS, stepMinHipShiftX, stepDropoutS
+        case kneeLiftHoldS, kneeLiftMinFlexDeg, kneeLiftMinAnkleClearance, kneeLiftMotionStayMax, kneeLiftDropoutS
     }
 
     /// `JSONDecoder.userInfo` key holding the `CalibrationTuning` that missing keys fall back to (default:
@@ -323,6 +545,47 @@ public struct CalibrationTuning: Codable, Equatable, Sendable {
         } else {
             minCapturedFrames = base.minCapturedFrames
         }
+        spanMinFloor = try d(.spanMinFloor, base.spanMinFloor)
+        noseToFootHeightRatio = try d(.noseToFootHeightRatio, base.noseToFootHeightRatio)
+        spanDepthToleranceRatio = try d(.spanDepthToleranceRatio, base.spanDepthToleranceRatio)
+        lidarMinDistanceM = try d(.lidarMinDistanceM, base.lidarMinDistanceM)
+        lidarMaxDistanceM = try d(.lidarMaxDistanceM, base.lidarMaxDistanceM)
+        lidarDistanceStayDeltaM = try d(.lidarDistanceStayDeltaM, base.lidarDistanceStayDeltaM)
+        lidarDistanceRelaxDeltaM = try d(.lidarDistanceRelaxDeltaM, base.lidarDistanceRelaxDeltaM)
+        lateralStepMarginM = try d(.lateralStepMarginM, base.lateralStepMarginM)
+        restHipCenterMinX = try d(.restHipCenterMinX, base.restHipCenterMinX)
+        restHipCenterMaxX = try d(.restHipCenterMaxX, base.restHipCenterMaxX)
+        resumeFloorHeightDeltaM = try d(.resumeFloorHeightDeltaM, base.resumeFloorHeightDeltaM)
+        resumeFloorAngleDeg = try d(.resumeFloorAngleDeg, base.resumeFloorAngleDeg)
+        sameDancerHeightDeltaM = try d(.sameDancerHeightDeltaM, base.sameDancerHeightDeltaM)
+        cameraHeightMinM = try d(.cameraHeightMinM, base.cameraHeightMinM)
+        cameraHeightMaxM = try d(.cameraHeightMaxM, base.cameraHeightMaxM)
+        exposureMaxShutterS = try d(.exposureMaxShutterS, base.exposureMaxShutterS)
+        remeterLumaDelta = try d(.remeterLumaDelta, base.remeterLumaDelta)
+        restHoldS = try d(.restHoldS, base.restHoldS)
+        overheadHoldS = try d(.overheadHoldS, base.overheadHoldS)
+        overheadMinWristAboveNose = try d(.overheadMinWristAboveNose, base.overheadMinWristAboveNose)
+        overheadMinTopMarginY = try d(.overheadMinTopMarginY, base.overheadMinTopMarginY)
+        overheadMinElbowDeg = try d(.overheadMinElbowDeg, base.overheadMinElbowDeg)
+        asymHoldS = try d(.asymHoldS, base.asymHoldS)
+        asymMinSideReachShoulders = try d(.asymMinSideReachShoulders, base.asymMinSideReachShoulders)
+        forwardHoldS = try d(.forwardHoldS, base.forwardHoldS)
+        forwardMinDeltaZM = try d(.forwardMinDeltaZM, base.forwardMinDeltaZM)
+        plieHoldS = try d(.plieHoldS, base.plieHoldS)
+        plieMinKneeFlexDeg = try d(.plieMinKneeFlexDeg, base.plieMinKneeFlexDeg)
+        plieMinHipDropNorm = try d(.plieMinHipDropNorm, base.plieMinHipDropNorm)
+        turnedHoldS = try d(.turnedHoldS, base.turnedHoldS)
+        turnedMinYawDeg = try d(.turnedMinYawDeg, base.turnedMinYawDeg)
+        turnedMaxYawDeg = try d(.turnedMaxYawDeg, base.turnedMaxYawDeg)
+        turnedMinShoulderWidth2D = try d(.turnedMinShoulderWidth2D, base.turnedMinShoulderWidth2D)
+        stepHoldS = try d(.stepHoldS, base.stepHoldS)
+        stepMinHipShiftX = try d(.stepMinHipShiftX, base.stepMinHipShiftX)
+        stepDropoutS = try d(.stepDropoutS, base.stepDropoutS)
+        kneeLiftHoldS = try d(.kneeLiftHoldS, base.kneeLiftHoldS)
+        kneeLiftMinFlexDeg = try d(.kneeLiftMinFlexDeg, base.kneeLiftMinFlexDeg)
+        kneeLiftMinAnkleClearance = try d(.kneeLiftMinAnkleClearance, base.kneeLiftMinAnkleClearance)
+        kneeLiftMotionStayMax = try d(.kneeLiftMotionStayMax, base.kneeLiftMotionStayMax)
+        kneeLiftDropoutS = try d(.kneeLiftDropoutS, base.kneeLiftDropoutS)
     }
 
     /// `self` with every key present in `json` (a JSON object) overriding its value; missing keys keep `self`'s.
