@@ -523,12 +523,12 @@ final class CalibrationPoseScorersTests: XCTestCase {
 
         // Verify standing dancers across [2.68 m, 4.0 m] (where 2D span = 0.41 -> 0.28, and 0.24 for 1.50 m at 4.0 m)
         // pass .rest cleanly in rearLiDAR with zero conflicting .stepCloser cues!
-        let testCases: [(distM: Double, heightM: Double, span2D: Double)] = [
-            (2.68, 1.73, 0.420),
-            (2.85, 1.73, 0.404),
-            (3.30, 1.73, 0.340),
-            (3.90, 1.73, 0.285),
-            (4.00, 1.50, 0.240)
+        let testCases: [(distM: Double, heightM: Double, wingspanM: Double, span2D: Double)] = [
+            (2.68, 1.73, 1.46, 0.420),
+            (2.85, 1.73, 1.46, 0.404),
+            (3.30, 1.73, 1.46, 0.340),
+            (3.90, 1.73, 1.46, 0.285),
+            (4.00, 1.50, 0.85 * 1.50, 0.240)
         ]
         for tc in testCases {
             let scale = tc.span2D / 0.63 // baseStanding2D span is 0.88 - 0.25 = 0.63
@@ -540,7 +540,7 @@ final class CalibrationPoseScorersTests: XCTestCase {
                 dancerDistanceM: tc.distM,
                 measuredHeightM: tc.heightM,
                 cameraHeightM: 0.74,
-                wingspanM: 0.85 * tc.heightM,
+                wingspanM: tc.wingspanM,
                 verticalFoVDeg: vFoV,
                 horizontalFoVDeg: hFoV
             )

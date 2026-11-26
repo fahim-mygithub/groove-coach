@@ -224,7 +224,7 @@ public enum CalibrationPoseScorers {
         /// Maps directly representable cues onto v1 `CalibrationCue` (for legacy compatibility).
         public var legacyCue: CalibrationCue? {
             switch self {
-            case .none: return .none
+            case .none: return CalibrationCue.none
             case .stepIn: return .stepIn
             case .stepBackShowFeet: return .stepBackShowFeet
             case .showHead: return .showHead
