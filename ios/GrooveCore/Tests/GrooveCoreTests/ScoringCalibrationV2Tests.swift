@@ -142,7 +142,7 @@ final class ScoringCalibrationV2Tests: XCTestCase {
 
     func testCalibrationV2NilZeroDriftAndCodableRoundTrip() throws {
         let f = try LessonFixtures.get()
-        let baseClip = f.clip("lesson_01_arms_wrong_weight_off")
+        let baseClip = try XCTUnwrap(f.dataset.golden_clips.first)
         XCTAssertNil(baseClip.calibration_v2)
 
         let v2 = LearnerCalibrationV2(
