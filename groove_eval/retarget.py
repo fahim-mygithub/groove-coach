@@ -12,8 +12,9 @@ learner's bone lengths:
 Joint angles are invariant to this step; joint positions (and anything normalised by leg length) are not, which is
 what lets a long-armed learner match a short-armed teacher.
 
-Learner lengths are the per-bone median over a calibration stance when the take carries one
-(`attempt_clip["calibration_frames"]`), else over the take itself. Bones the learner frames never show keep the
+Learner lengths prefer `attempt_clip["calibration_v2"]["boneLengthsM"]` (finite positive lengths, when
+`retarget.enabled` is true), falling back to the per-bone median over a calibration stance
+(`attempt_clip["calibration_frames"]`), else over the take itself. Bones the learner never provides keep the
 teacher's length. Hand landmarks move with their wrist.
 """
 
@@ -69,14 +70,37 @@ def median_bone_lengths(frames: Sequence[Mapping[str, Any]]) -> Dict[str, float]
     return {child: _median(vals) for child, vals in samples.items()}
 
 
+def _finite_positive(val: Any) -> Optional[float]:
+    if val is None or isinstance(val, bool):
+        return None
+    try:
+        v = float(val)
+    except (TypeError, ValueError):
+        return None
+    return v if (math.isfinite(v) and v > 0.0) else None
+
+
 def learner_bone_lengths(attempt_clip: Mapping[str, Any]) -> Dict[str, float]:
     """The learner's bone lengths in the reference's side labels.
 
-    From `calibration_frames` (a calibration stance) when present and non-empty, else from the take's frames. A
-    mirrored take's left/right labels are swapped, like `scoring._swap_mirrored` does for its joints.
+    When `attempt_clip["calibration_v2"]["boneLengthsM"]` contains finite positive bone lengths, prefers those first
+    (spec §8.1; called by `score_attempt` only when `retarget.enabled` is true), falling back to `calibration_frames`
+    (a calibration stance) when present and non-empty, else the take's frames. A mirrored take's left/right labels are
+    swapped, like `scoring._swap_mirrored` does for its joints.
     """
-    frames = attempt_clip.get("calibration_frames") or attempt_clip["frames"]
-    lengths = median_bone_lengths(frames)
+    calib_v2 = attempt_clip.get("calibration_v2")
+    raw_v2_bones = calib_v2.get("boneLengthsM") if isinstance(calib_v2, Mapping) else None
+    v2_lengths: Dict[str, float] = {}
+    if isinstance(raw_v2_bones, Mapping):
+        for name, raw_val in raw_v2_bones.items():
+            fv = _finite_positive(raw_val)
+            if fv is not None:
+                v2_lengths[str(name)] = fv
+    if v2_lengths:
+        lengths = v2_lengths
+    else:
+        frames = attempt_clip.get("calibration_frames") or attempt_clip["frames"]
+        lengths = median_bone_lengths(frames)
     if bool(attempt_clip.get("mirrored", False)):
         lengths = {mirror_name(k): v for k, v in lengths.items()}
     return lengths

@@ -2890,5 +2890,145 @@
       "angle:rightElbow": "ok",
       "angle:rightKnee": "ok"
     }
+  },
+  {
+    "clip_id": "lesson_20_calibration_v2_rom_conf_metric",
+    "passed": true,
+    "coverage_ratio": 1.0,
+    "foot_scoring_status": "available",
+    "mean_offset_ms": 18.76,
+    "good_or_better_ratio": 1.0,
+    "shape_score": 92.96,
+    "groove_score": 100.0,
+    "worst_beat": {
+      "count_number": 1,
+      "offset_ms": 19.22,
+      "judgment": "Perfect"
+    },
+    "worst_joints": [
+      {
+        "joint": "knees",
+        "mean_angle_error_deg": 12.87
+      },
+      {
+        "joint": "hips",
+        "mean_angle_error_deg": 0.9
+      },
+      {
+        "joint": "spine",
+        "mean_angle_error_deg": 0.25
+      }
+    ],
+    "smoothing_applied": true,
+    "hit_status": "available",
+    "hit_score": 100.0,
+    "hit_matched_count": 4,
+    "hit_mean_offset_ms": 0.0,
+    "hand_status": "skipped",
+    "hand_score": null,
+    "hand_samples": 0,
+    "hand_user_shape": null,
+    "hand_reference_shape": null,
+    "joint_status": "available",
+    "joint_top_hint": "bend left knee",
+    "joint_counts": {
+      "ok": 20,
+      "warn": 2,
+      "off": 0
+    },
+    "joint_severities": {
+      "centerShoulder": "ok",
+      "leftAnkle": "ok",
+      "leftElbow": "ok",
+      "leftFootIndex": "ok",
+      "leftHeel": "ok",
+      "leftHip": "ok",
+      "leftKnee": "ok",
+      "leftShoulder": "ok",
+      "leftWrist": "ok",
+      "rightAnkle": "ok",
+      "rightElbow": "ok",
+      "rightFootIndex": "ok",
+      "rightHeel": "ok",
+      "rightHip": "ok",
+      "rightKnee": "ok",
+      "rightShoulder": "ok",
+      "rightWrist": "ok",
+      "spine": "ok",
+      "angle:leftElbow": "ok",
+      "angle:leftKnee": "warn",
+      "angle:rightElbow": "ok",
+      "angle:rightKnee": "warn"
+    }
+  },
+  {
+    "clip_id": "lesson_21_calibration_v2_retarget_bones",
+    "passed": true,
+    "coverage_ratio": 1.0,
+    "foot_scoring_status": "available",
+    "mean_offset_ms": 5.64,
+    "good_or_better_ratio": 1.0,
+    "shape_score": 99.56,
+    "groove_score": 100.0,
+    "worst_beat": {
+      "count_number": 1,
+      "offset_ms": 5.74,
+      "judgment": "Perfect"
+    },
+    "worst_joints": [
+      {
+        "joint": "hips",
+        "mean_angle_error_deg": 0.78
+      },
+      {
+        "joint": "right_foot",
+        "mean_angle_error_deg": 0.26
+      },
+      {
+        "joint": "left_foot",
+        "mean_angle_error_deg": 0.1
+      }
+    ],
+    "smoothing_applied": true,
+    "hit_status": "not_applicable",
+    "hit_score": null,
+    "hit_matched_count": 0,
+    "hit_mean_offset_ms": null,
+    "hand_status": "skipped",
+    "hand_score": null,
+    "hand_samples": 0,
+    "hand_user_shape": null,
+    "hand_reference_shape": null,
+    "joint_status": "available",
+    "joint_top_hint": null,
+    "joint_counts": {
+      "ok": 22,
+      "warn": 0,
+      "off": 0
+    },
+    "joint_severities": {
+      "centerShoulder": "ok",
+      "leftAnkle": "ok",
+      "leftElbow": "ok",
+      "leftFootIndex": "ok",
+      "leftHeel": "ok",
+      "leftHip": "ok",
+      "leftKnee": "ok",
+      "leftShoulder": "ok",
+      "leftWrist": "ok",
+      "rightAnkle": "ok",
+      "rightElbow": "ok",
+      "rightFootIndex": "ok",
+      "rightHeel": "ok",
+      "rightHip": "ok",
+      "rightKnee": "ok",
+      "rightShoulder": "ok",
+      "rightWrist": "ok",
+      "spine": "ok",
+      "angle:leftElbow": "ok",
+      "angle:leftKnee": "ok",
+      "angle:rightElbow": "ok",
+      "angle:rightKnee": "ok"
+    }
   }
 ]
