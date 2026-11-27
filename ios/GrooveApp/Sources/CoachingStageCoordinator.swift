@@ -129,8 +129,8 @@ final class CoachingStageCoordinator: ObservableObject {
     convenience init(
         host: CoachingHost = .lesson,
         postTakeGraceDuration: Double = CoachingStageCoordinator.defaultPostTakeGraceDuration,
-        externalDisplay: ExternalDisplayManager = .shared,
-        profileStore: CalibrationProfileStore = .shared
+        externalDisplay: ExternalDisplayManager? = nil,
+        profileStore: CalibrationProfileStore? = nil
     ) {
         self.init(
             host: host,
@@ -144,23 +144,25 @@ final class CoachingStageCoordinator: ObservableObject {
     private init(
         host: CoachingHost,
         postTakeGraceDuration: Double = CoachingStageCoordinator.defaultPostTakeGraceDuration,
-        externalDisplay: ExternalDisplayManager = .shared,
-        profileStore: CalibrationProfileStore = .shared,
+        externalDisplay: ExternalDisplayManager? = nil,
+        profileStore: CalibrationProfileStore? = nil,
         isAppSingleton: Bool
     ) {
+        let resolvedDisplay = externalDisplay ?? .shared
+        let resolvedStore = profileStore ?? .shared
         self.host = host
-        self.externalDisplay = externalDisplay
-        self.profileStore = profileStore
+        self.externalDisplay = resolvedDisplay
+        self.profileStore = resolvedStore
         self.isAppSingleton = isAppSingleton
         self.router = GestureRouter(
             host: host,
             phase: .idle,
             postTakeGraceDuration: postTakeGraceDuration
         )
-        let connected = externalDisplay.isConnected
+        let connected = resolvedDisplay.isConnected
         self.isExternalDisplayConnected = connected
         self.cameraMode = connected ? .rearLiDAR : .frontSelfView
-        self.activeProfileV2 = profileStore.activeProfileV2
+        self.activeProfileV2 = resolvedStore.activeProfileV2
         self.stageModel = TVCoachingStageModel(host: host, phase: .idle)
 
         if !isAppSingleton {
