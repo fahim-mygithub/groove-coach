@@ -18,6 +18,9 @@ Cases (112.5 BPM, the IMG_4941 tempo; 8 beats; 30 fps):
 - velocity: continuous arm swings, learner arms 70 ms behind; `tolerance.velocity_scale` widens the fast beats.
 - occlusion: learner wrist tracking drops (confidence 0.2, wrists off) on four counts; `tolerance.occlusion`
   widens or masks them.
+- calibration_v2: one take with default `retarget.enabled = false` exercising `metricScaleFactor` hit scaling, `rom`
+  (plié knee-bounce cap, resting trunk lean baseline, overhead tolerance floor), and `jointConfidenceWeights`; and one
+  take with `config_overrides` enabling `retarget.enabled = true` exercising `calibration_v2.boneLengthsM` priority.
 
 Body: the down-bounce (or still) skeleton of `generate_golden_clips._synthesize_skeleton_frame`. Arms: upper arm and
 forearm directions in the body frame (out, up, forward), blended between poses with a smoothstep over 0.18 s that
@@ -31,7 +34,7 @@ import math
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
-from groove_eval import lesson_package
+from groove_eval import lesson_package, retarget
 from groove_eval.generate_feature_clips import _hand_points
 from groove_eval.generate_golden_clips import _synthesize_skeleton_frame
 
@@ -52,6 +55,9 @@ EAR: ArmPose = ((1.0, 0.0, 0.0), (0.0, 1.0, 0.0))  # elbow 90 deg, forearm up by
 GATHER: ArmPose = ((0.0, 0.0, 1.0), (-1.0, 0.0, 0.0))  # elbow 90 deg, forearm across the chest
 CLASP: ArmPose = ((0.25, -0.75, 0.6), (-1.0, 0.15, 0.3))  # wrists meet in front of the chest
 CLASP_LOW: ArmPose = ((0.2, -0.95, 0.3), (-1.0, -0.35, 0.3))  # the learner's lower clasp
+OVERHEAD: ArmPose = ((0.18, 0.98, 0.0), (0.12, 0.99, 0.0))  # ~170 deg torso-frame upper-arm elevation
+OVERHEAD_MID: ArmPose = ((0.62, 0.78, 0.0), (0.58, 0.81, 0.0))  # shoulder-high ready pose between overhead hits
+OVERHEAD_LIMITED: ArmPose = ((0.28, 0.96, 0.0), (0.22, 0.97, 0.0))  # learner's lower overhead reach (~164 deg)
 
 Keyframes = List[Tuple[float, ArmPose]]
 
@@ -375,6 +381,137 @@ def generate_lesson_dataset() -> Dict[str, Any]:
     clips.append(_clip("lesson_19_occlusion_masked", "occlusion_hits",
                        "Same take, occlusion mask: low-confidence wrist beats left out, clean verdicts", True, beats,
                        config_overrides=_overrides(tolerance={"occlusion": {"mask": True}}), **occ))
+
+    # 8. Calibration v2 (`groove.calibration/2`, spec §8 & §9.1):
+    #    - lesson_20: default `retarget.enabled = false` preserved even with `boneLengthsM` present, while exercising
+    #      `metricScaleFactor` hit velocity scaling, `rom` (plié cap, trunk lean baseline, overhead tolerance floor),
+    #      and `jointConfidenceWeights` verdict/shape scaling.
+    #    - lesson_21: explicit `retarget.enabled = true` override exercising `calibration_v2.boneLengthsM` priority
+    #      over `calibration_frames` and `attempt.frames`.
+    refs["calib_v2_overhead"] = _clip(
+        "ref_calib_v2_overhead",
+        "calib_v2_overhead",
+        "Reference: full bounce, arms hit overhead on counts 1, 3, 5, 7 from a high ready guard",
+        True,
+        beats,
+        lambda t: _pose_at(
+            t, [(b, OVERHEAD if k % 2 == 0 else OVERHEAD_MID) for k, b in enumerate(beats)], initial=OVERHEAD_MID
+        ),
+    )
+    v2_end = beats[-1] + PERIOD
+    v2_frames: List[Dict[str, Any]] = []
+    for i in range(int(round(v2_end * FPS)) + 1):
+        c = i / FPS
+        t_m = c - 0.006
+        phase = 2.0 * math.pi * ((t_m - beats[0]) / PERIOD)
+        spine_phase = 2.0 * math.pi * ((t_m - 0.066 - beats[0]) / PERIOD)
+        wave = 0.5 * (1.0 + math.cos(phase))
+        spine_jack = 4.0 + 14.0 * 0.5 * (1.0 + math.cos(spine_phase))
+        frame = _synthesize_skeleton_frame(
+            t_m,
+            8.0 + 15.0 * wave,
+            spine_jack,
+            9.0 + 0.35 * spine_jack,
+            4.0 * math.cos(phase),
+            -4.0 * math.cos(phase),
+        )
+        frame["t"] = round(c, 5)
+        _attach_arms(
+            frame,
+            _pose_at(
+                t_m,
+                [(b, OVERHEAD_LIMITED if k % 2 == 0 else OVERHEAD_MID) for k, b in enumerate(beats)],
+                initial=OVERHEAD_MID,
+            ),
+            1.0,
+            None,
+        )
+        v2_frames.append(frame)
+
+    default_rom = {
+        "standingKneeFlexDeg": 6.0,
+        "plieKneeFlexDeg": 25.0,
+        "plieHipDropNorm": 0.08,
+        "maxShoulderElevationDeg": 160.0,
+        "maxKneeLiftFlexDeg": 75.0,
+        "trunkLeanBaselineDeg": 10.4,
+    }
+    calib_v2_rom_conf_metric = {
+        "clip_id": "lesson_20_calibration_v2_rom_conf_metric",
+        "move_tag": "calib_v2_overhead",
+        "description": (
+            "Calibration v2 with default retarget off: metricScaleFactor recovers overhead hits, ROM & confidence "
+            "weights adjust groove, posture, and tolerances while preserving retarget.enabled = false"
+        ),
+        "bpm": BPM,
+        "beat_times": list(beats),
+        "gravity_vector": [0.0, -1.0, 0.0],
+        "mirrored": False,
+        "audio_latency_ms": 0.0,
+        "speed_pct": 100,
+        "expected": {
+            "passed": True,
+            "reason": "Calibration v2 ROM, confidence weights, and metricScaleFactor hit scaling with retarget off",
+        },
+        "frames": v2_frames,
+        "calibration_v2": {
+            "schema": "groove.calibration/2",
+            "metricScaleFactor": 1.50,
+            "dancerHeightM": 1.73,
+            "wingspanM": 1.46,
+            "boneLengthsM": {"spine": 0.36, "leftWrist": 0.36, "rightWrist": 0.36},
+            "rom": default_rom,
+            "jointConfidenceWeights": {
+                "leftKnee": 0.55,
+                "rightKnee": 0.55,
+                "leftElbow": 0.60,
+                "rightElbow": 0.60,
+                "leftWrist": 0.55,
+                "rightWrist": 0.55,
+                "leftHeel": 0.60,
+                "leftFootIndex": 0.60,
+                "rightHeel": 0.60,
+                "rightFootIndex": 0.60,
+            },
+        },
+    }
+    clips.append(calib_v2_rom_conf_metric)
+
+    tall_bones = {k: round(v, 6) for k, v in retarget.median_bone_lengths(stance["frames"]).items()}
+    wingspan_m = round(
+        sum(
+            tall_bones[k]
+            for k in ("leftShoulder", "leftElbow", "leftWrist", "rightShoulder", "rightElbow", "rightWrist")
+        ),
+        4,
+    )
+    calib_v2_retarget = _clip(
+        "lesson_21_calibration_v2_retarget_bones",
+        "retarget_short",
+        "Tall long-armed learner with retarget enabled and calibration_v2.boneLengthsM overriding calibration_frames",
+        True,
+        beats,
+        config_overrides=retarget_on,
+        **tall,
+    )
+    calib_v2_retarget["calibration_frames"] = [refs["retarget_short"]["frames"][0]]
+    calib_v2_retarget["calibration_v2"] = {
+        "schema": "groove.calibration/2",
+        "metricScaleFactor": 1.0,
+        "dancerHeightM": 1.84,
+        "wingspanM": wingspan_m,
+        "boneLengthsM": tall_bones,
+        "rom": {
+            "standingKneeFlexDeg": 8.0,
+            "plieKneeFlexDeg": 42.0,
+            "plieHipDropNorm": 0.09,
+            "maxShoulderElevationDeg": 180.0,
+            "maxKneeLiftFlexDeg": 78.0,
+            "trunkLeanBaselineDeg": 7.4,
+        },
+        "jointConfidenceWeights": {},
+    }
+    clips.append(calib_v2_retarget)
 
     return {"references": refs, "golden_clips": clips}
 

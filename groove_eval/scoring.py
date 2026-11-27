@@ -28,7 +28,7 @@ from __future__ import annotations
 import json
 import math
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 from groove_eval import hand_styling, joint_tolerance, retarget, segmentation
 from groove_eval.canonical_skeleton import CANONICAL_BONES
@@ -114,6 +114,18 @@ ARM_BONES = (
 )
 HAND_SIDES = ("left", "right")
 HAND_LABEL_ORDER = hand_styling.SHAPE_LABELS + ("unknown",)
+
+# Calibration v2 scoring constants & ROM defaults (mirrors ScoringFeatures.swift & CalibrationROM in GrooveCore).
+OVERHEAD_TOLERANCE_FACTOR: float = 1.25
+OVERHEAD_TOLERANCE_JOINTS = frozenset({"leftElbow", "rightElbow", "leftWrist", "rightWrist"})
+DEFAULT_CALIBRATION_ROM: Dict[str, float] = {
+    "standingKneeFlexDeg": 0.0,
+    "plieKneeFlexDeg": 35.0,
+    "plieHipDropNorm": 0.08,
+    "maxShoulderElevationDeg": 180.0,
+    "maxKneeLiftFlexDeg": 75.0,
+    "trunkLeanBaselineDeg": 0.0,
+}
 
 
 def _section(thresholds: Dict[str, Any], name: str, defaults: Dict[str, Any]) -> Dict[str, Any]:
@@ -542,6 +554,111 @@ def torso_frame_arm_vectors(pose: Dict[str, List[float]]) -> Optional[Dict[str, 
     return out
 
 
+def sanitized_metric_scale(scale: Any) -> float:
+    """Finite positive `metricScaleFactor` from `calibration_v2`, else `1.0` (mirrors `sanitizedMetricScale`)."""
+    if scale is None or isinstance(scale, bool):
+        return 1.0
+    try:
+        s = float(scale)
+    except (TypeError, ValueError):
+        return 1.0
+    return s if (math.isfinite(s) and s > 0.0) else 1.0
+
+
+def _parse_rom(calib_v2: Any) -> Optional[Dict[str, float]]:
+    if not isinstance(calib_v2, Mapping):
+        return None
+    raw_rom = calib_v2.get("rom")
+    if not isinstance(raw_rom, Mapping):
+        return None
+    merged = dict(DEFAULT_CALIBRATION_ROM)
+    for key, default_val in DEFAULT_CALIBRATION_ROM.items():
+        rv = raw_rom.get(key)
+        if rv is not None and not isinstance(rv, bool):
+            try:
+                fv = float(rv)
+                if math.isfinite(fv):
+                    merged[key] = fv
+            except (TypeError, ValueError):
+                pass
+    return merged
+
+
+def joint_confidence_weight(joint: str, weights: Mapping[str, Any], mirror: bool = False) -> float:
+    """Clamped per-joint reliability weight `w_j in [0.50, 1.00]` from `calibration_v2.jointConfidenceWeights` (§8.3).
+
+    Maps reference side `joint` to the learner's anatomical side when `mirror` is true, falls back to synthesized
+    source joints for `root`/`centerShoulder`/`spine`, and defaults to `1.0` when absent.
+    """
+    if not weights:
+        return 1.0
+    learner_joint = retarget.mirror_name(joint) if mirror else joint
+    raw = weights.get(learner_joint)
+    if raw is not None and not isinstance(raw, bool):
+        try:
+            v = float(raw)
+            if math.isfinite(v):
+                return min(1.0, max(0.5, v))
+        except (TypeError, ValueError):
+            pass
+
+    def clamped_source_min(keys: Sequence[str]) -> float:
+        vals: List[float] = []
+        for k in keys:
+            rv = weights.get(k)
+            if rv is not None and not isinstance(rv, bool):
+                try:
+                    fv = float(rv)
+                    if math.isfinite(fv):
+                        vals.append(min(1.0, max(0.5, fv)))
+                except (TypeError, ValueError):
+                    pass
+        return min(vals) if vals else 1.0
+
+    if learner_joint == "root":
+        return clamped_source_min(("leftHip", "rightHip"))
+    if learner_joint == "centerShoulder":
+        return clamped_source_min(("leftShoulder", "rightShoulder"))
+    if learner_joint == "spine":
+        return clamped_source_min(("leftShoulder", "rightShoulder", "leftHip", "rightHip"))
+    return 1.0
+
+
+def shape_group_confidence_weight(group: str, weights: Mapping[str, Any], mirror: bool = False) -> float:
+    """Mean constituent joint reliability weight `w_j` for a `score_shape` sub-weight group (§8.3)."""
+    if group == "knees":
+        joints: Sequence[str] = ("leftKnee", "rightKnee")
+    elif group == "spine":
+        joints = ("spine",) if weights.get("spine") is not None else ("leftShoulder", "rightShoulder", "leftHip", "rightHip")
+    elif group == "hips":
+        joints = ("leftHip", "rightHip")
+    elif group == "left_foot":
+        joints = ("leftHeel", "leftFootIndex")
+    elif group == "right_foot":
+        joints = ("rightHeel", "rightFootIndex")
+    elif group == "arms":
+        joints = ("leftShoulder", "rightShoulder", "leftElbow", "rightElbow", "leftWrist", "rightWrist")
+    else:
+        return 1.0
+    vals = [joint_confidence_weight(j, weights, mirror=mirror) for j in joints]
+    return (sum(vals) / len(vals)) if vals else 1.0
+
+
+def max_upper_arm_elevation_deg(pose: Dict[str, List[float]]) -> Optional[float]:
+    """Maximum torso-frame upper-arm elevation angle in degrees (`0` down along `-e2`, `90` T-pose, `180` overhead)."""
+    arm_vecs = torso_frame_arm_vectors(pose)
+    if arm_vecs is None:
+        return None
+    best: Optional[float] = None
+    for key in ("leftUpperArm", "rightUpperArm"):
+        u = arm_vecs.get(key)
+        if u is None:
+            continue
+        elev = math.acos(min(1.0, max(-1.0, -u[1]))) * 180.0 / math.pi
+        best = elev if best is None else max(best, elev)
+    return best
+
+
 def score_shape(
     user_features: List[Dict[str, float]],
     ref_features: List[Dict[str, float]],
@@ -554,6 +671,9 @@ def score_shape(
     user_gravity: Vec3 = (0.0, -1.0, 0.0),
     ref_gravity: Vec3 = (0.0, -1.0, 0.0),
     mirror: bool = False,
+    calibration_v2: Optional[Mapping[str, Any]] = None,
+    ref_calibration_v2: Optional[Mapping[str, Any]] = None,
+    ref_calibration_frames: Optional[Sequence[Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
     """Phase-shifted Shape score: shifts user curve by measured turnaround offset so timing isn't double-penalized.
 
@@ -575,6 +695,23 @@ def score_shape(
         ("right_foot", "right_foot_pitch_deg", 0.5 * foot_weight),
     ]
 
+    rom_cfg = _parse_rom(calibration_v2)
+    if rom_cfg is not None:
+        ref_rom_cfg = _parse_rom(ref_calibration_v2)
+        if ref_rom_cfg is not None:
+            ref_rest_trunk_lean = ref_rom_cfg["trunkLeanBaselineDeg"]
+        elif ref_calibration_frames:
+            vals = [
+                extract_frame_features(f, ref_gravity, mirror=False)["trunk_lean_deg"]
+                for f in ref_calibration_frames
+            ]
+            ref_rest_trunk_lean = retarget._median(vals)
+        else:
+            ref_rest_trunk_lean = min((f["trunk_lean_deg"] for f in ref_features), default=0.0)
+        trunk_lean_bias = min(5.0, max(-5.0, rom_cfg["trunkLeanBaselineDeg"] - ref_rest_trunk_lean))
+    else:
+        trunk_lean_bias = 0.0
+
     joint_errors: Dict[str, List[float]] = {name: [] for name, _, _ in joint_keys}
     lateral_errors: List[float] = []
     arm_errors: List[float] = []
@@ -591,7 +728,11 @@ def score_shape(
             for joint_name, feat_key, _ in joint_keys:
                 v_ref = _interpolate_feature_at(ref_features, t_ref, feat_key)
                 v_usr = _interpolate_feature_at(user_features, t_usr, feat_key)
-                joint_errors[joint_name].append(abs(v_usr - v_ref))
+                if feat_key == "trunk_lean_deg" and rom_cfg is not None:
+                    err = abs((v_usr - v_ref) - trunk_lean_bias)
+                else:
+                    err = abs(v_usr - v_ref)
+                joint_errors[joint_name].append(err)
 
             x_ref = _interpolate_feature_at(ref_features, t_ref, "hip_x_norm")
             x_usr = _interpolate_feature_at(user_features, t_usr, "hip_x_norm")
@@ -616,13 +757,31 @@ def score_shape(
         mean_joint_err["arms"] = arm_error
     other_scale = (1.0 - arm_weight) if arm_error is not None else 1.0
 
+    raw_conf_weights = calibration_v2.get("jointConfidenceWeights") if isinstance(calibration_v2, Mapping) else None
+    conf_weights: Mapping[str, Any] = raw_conf_weights if isinstance(raw_conf_weights, Mapping) else {}
     weighted_score = 0.0
-    for joint_name, _, weight in joint_keys:
-        err = mean_joint_err[joint_name]
-        component = max(0.0, 100.0 * (1.0 - (err / max_err)))
-        weighted_score += (weight * other_scale) * component
-    if arm_error is not None:
-        weighted_score += arm_weight * max(0.0, 100.0 * (1.0 - (arm_error / max_err)))
+    if not conf_weights:
+        for joint_name, _, weight in joint_keys:
+            err = mean_joint_err[joint_name]
+            component = max(0.0, 100.0 * (1.0 - (err / max_err)))
+            weighted_score += (weight * other_scale) * component
+        if arm_error is not None:
+            weighted_score += arm_weight * max(0.0, 100.0 * (1.0 - (arm_error / max_err)))
+    else:
+        shape_terms: List[Tuple[float, float]] = []
+        for joint_name, _, weight in joint_keys:
+            err = mean_joint_err[joint_name]
+            component = max(0.0, 100.0 * (1.0 - (err / max_err)))
+            w_conf = shape_group_confidence_weight(joint_name, conf_weights, mirror=mirror)
+            shape_terms.append(((weight * other_scale) * w_conf, component))
+        if arm_error is not None:
+            component = max(0.0, 100.0 * (1.0 - (arm_error / max_err)))
+            w_conf = shape_group_confidence_weight("arms", conf_weights, mirror=mirror)
+            shape_terms.append((arm_weight * w_conf, component))
+        weight_sum = sum(w for w, _ in shape_terms)
+        if weight_sum > 1e-12:
+            for w, comp in shape_terms:
+                weighted_score += (w / weight_sum) * comp
 
     worst_joints = sorted(
         [
@@ -708,13 +867,20 @@ def score_groove(
     user_features: List[Dict[str, float]],
     ref_features: List[Dict[str, float]],
     groove_cfg: Dict[str, float],
+    calibration_v2: Optional[Mapping[str, Any]] = None,
 ) -> Dict[str, Any]:
     user_knee_vals = [f["mean_knee_flex"] for f in user_features]
     ref_knee_vals = [f["mean_knee_flex"] for f in ref_features]
-    user_knee_range = max(user_knee_vals) - min(user_knee_vals)
-    ref_knee_range = max(1.0, max(ref_knee_vals) - min(ref_knee_vals))
+    user_knee_range = (max(user_knee_vals) - min(user_knee_vals)) if user_knee_vals else 0.0
+    raw_ref_knee_range = max(1.0, (max(ref_knee_vals) - min(ref_knee_vals)) if ref_knee_vals else 0.0)
+    rom_cfg = _parse_rom(calibration_v2)
+    if rom_cfg is not None:
+        rom_cap = max(15.0, rom_cfg["plieKneeFlexDeg"] - rom_cfg["standingKneeFlexDeg"])
+        effective_ref_knee_range = min(raw_ref_knee_range, rom_cap)
+    else:
+        effective_ref_knee_range = raw_ref_knee_range
 
-    knee_flex_ratio = user_knee_range / ref_knee_range
+    knee_flex_ratio = user_knee_range / effective_ref_knee_range
     min_flex_ratio = float(groove_cfg.get("min_knee_flex_ratio", 0.65))
     flex_subscore = (
         min(100.0, 100.0 * (knee_flex_ratio / max(0.01, min_flex_ratio)))
@@ -847,6 +1013,7 @@ def score_hit_timing(
     beat_times: Sequence[float],
     audio_latency_ms: float,
     hits_cfg: Dict[str, Any],
+    metric_scale_factor: float = 1.0,
 ) -> Dict[str, Any]:
     """Accent / hit timing: the learner's settle-after-move hits vs the reference's hits on the same beats.
 
@@ -877,7 +1044,15 @@ def score_hit_timing(
         return result
 
     ref_hits = segmentation.detect_hits(ref_frames, **seg_kwargs)
-    user_hits = segmentation.detect_hits(user_frames, **seg_kwargs)
+    scale = sanitized_metric_scale(metric_scale_factor)
+    user_seg_kwargs = dict(seg_kwargs)
+    if scale != 1.0:
+        # `segmentation.motion_energy` divides joint speed by `torso_scale` (`root -> centerShoulder`), so uniform
+        # coordinate scaling cancels (`s / s = 1`); dividing moving/settle thresholds by `scale` scales learner hit
+        # speed by `metricScaleFactor` identically across canonical and torso-less frames (§8.1).
+        user_seg_kwargs["moving_threshold"] = seg_kwargs["moving_threshold"] / scale
+        user_seg_kwargs["settle_threshold"] = seg_kwargs["settle_threshold"] / scale
+    user_hits = segmentation.detect_hits(user_frames, **user_seg_kwargs)
     latency_s = audio_latency_ms / 1000.0
     user_shifted = [{"timestamp": h["timestamp"] - latency_s} for h in user_hits]
     ref_by_beat = _paired_offsets_by_beat(segmentation.pair_hits_to_beats(ref_hits, beat_times, tolerance_ms), beat_times)
@@ -1063,6 +1238,7 @@ def score_joint_feedback(
     jt_cfg: Dict[str, Any],
     windows: Optional[Sequence[Dict[str, Any]]] = None,
     tol_cfg: Optional[Dict[str, Any]] = None,
+    calibration_v2: Optional[Mapping[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Per-joint ok/warn/off verdicts with correction hints, averaged over the phase-aligned beats.
 
@@ -1094,6 +1270,10 @@ def score_joint_feedback(
     occ_mask = bool(occ_cfg["mask"])
     occlusion_on = occ_mask or occ_factor != 1.0
     occ_names = sorted(set(pos_tol) | {t["name"] for t in joint_tolerance.DEFAULT_ANGLE_TRIPLES})
+    raw_conf_weights = calibration_v2.get("jointConfidenceWeights") if isinstance(calibration_v2, Mapping) else None
+    conf_weights: Mapping[str, Any] = raw_conf_weights if isinstance(raw_conf_weights, Mapping) else {}
+    rom_cfg = _parse_rom(calibration_v2)
+    max_shoulder_elev_deg = rom_cfg["maxShoulderElevationDeg"] if rom_cfg is not None else None
 
     pos_err: Dict[str, List[float]] = {}
     pos_delta: Dict[str, List[float]] = {}
@@ -1115,6 +1295,11 @@ def score_joint_feedback(
             if occlusion_on
             else []
         )
+        overhead_exceeded = False
+        if max_shoulder_elev_deg is not None:
+            ref_elev = max_upper_arm_elevation_deg(ref_pose)
+            if ref_elev is not None and ref_elev > max_shoulder_elev_deg:
+                overhead_exceeded = True
 
         def scale(name: str, velocity: Dict[str, float]) -> float:
             s = 1.0
@@ -1126,6 +1311,11 @@ def score_joint_feedback(
                 s *= velocity[name]
             if name in occluded:
                 s *= occ_factor
+            if overhead_exceeded and name in OVERHEAD_TOLERANCE_JOINTS:
+                s *= OVERHEAD_TOLERANCE_FACTOR
+            if conf_weights:
+                w_conf = joint_confidence_weight(name, conf_weights, mirror=mirror)
+                s *= 1.0 / w_conf
             return s
 
         for name in sorted(pos_tol):
@@ -1349,6 +1539,12 @@ def score_attempt(
         thresholds["timing"],
     )
 
+    calib_v2 = attempt_clip.get("calibration_v2") if isinstance(attempt_clip.get("calibration_v2"), Mapping) else None
+    ref_calib_v2 = (
+        reference_clip.get("calibration_v2") if isinstance(reference_clip.get("calibration_v2"), Mapping) else None
+    )
+    ref_cal_frames = reference_clip.get("calibration_frames")
+
     shape_res = score_shape(
         user_features,
         ref_features,
@@ -1361,12 +1557,18 @@ def score_attempt(
         user_gravity,
         ref_gravity,
         mirror,
+        calibration_v2=calib_v2,
+        ref_calibration_v2=ref_calib_v2,
+        ref_calibration_frames=ref_cal_frames,
     )
     shape_res["foot_scoring_status"] = foot_scoring_status
 
-    groove_res = score_groove(user_features, ref_features, thresholds["groove"])
+    groove_res = score_groove(user_features, ref_features, thresholds["groove"], calibration_v2=calib_v2)
 
-    hits_res = score_hit_timing(user_frames, ref_frames, beat_times, audio_latency_ms, hits_cfg)
+    metric_scale = sanitized_metric_scale(calib_v2.get("metricScaleFactor") if calib_v2 is not None else None)
+    hits_res = score_hit_timing(
+        user_frames, ref_frames, beat_times, audio_latency_ms, hits_cfg, metric_scale_factor=metric_scale
+    )
     tolerances = compute_joint_tolerances(
         [reference_clip] + list(golden_clips or []), beat_times, jt_cfg, smoothing_cfg
     )
@@ -1383,6 +1585,7 @@ def score_attempt(
         jt_cfg,
         windows,
         tol_cfg,
+        calibration_v2=calib_v2,
     )
     hands_res = score_hand_styling(
         user_frames, ref_frames, beat_times, timing_res["per_beat"], audio_latency_ms, mirror, hands_cfg, windows
@@ -1619,7 +1822,17 @@ def _measure_clip_leg_scale(clip: Dict[str, Any]) -> float:
             ra = apply_gravity_correction(tuple(joints["rightAnkle"]), grav)  # type: ignore[arg-type]
             s = 0.5 * ((_norm(_sub(lk, lh)) + _norm(_sub(la, lk))) + (_norm(_sub(rk, rh)) + _norm(_sub(ra, rk))))
             scales.append(s)
-    return round(sum(scales) / max(1, len(scales)), 4)
+    calib_v2 = clip.get("calibration_v2")
+    has_v2 = isinstance(calib_v2, Mapping)
+    metric_scale = sanitized_metric_scale(calib_v2.get("metricScaleFactor") if has_v2 else None)
+    if not scales:
+        return round(0.82 * metric_scale, 4) if has_v2 else 0.82
+    mean_scale = sum(scales) / len(scales)
+    scaled = (mean_scale * metric_scale) if has_v2 else mean_scale
+    return round(scaled, 4)
+
+
+measure_clip_leg_scale = _measure_clip_leg_scale
 
 
 def calibrate_user_baseline(
