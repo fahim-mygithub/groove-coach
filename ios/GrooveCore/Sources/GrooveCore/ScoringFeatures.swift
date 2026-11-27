@@ -444,6 +444,98 @@ extension GrooveScoringEngine {
         return out
     }
 
+    // MARK: - Calibration v2 scoring helpers (§8.1, §8.2, §8.3)
+
+    /// Tolerance multiplier applied to elbow & wrist verdicts on beats where the reference's torso-frame
+    /// upper-arm elevation exceeds `rom.maxShoulderElevationDeg` (§8.2).
+    public static let overheadToleranceFactor: Double = 1.25
+
+    static let overheadToleranceJoints: Set<String> = [
+        "leftElbow", "rightElbow", "leftWrist", "rightWrist"
+    ]
+
+    static func sanitizedMetricScale(_ scale: Double?) -> Double {
+        guard let s = scale, s.isFinite, s > 0.0 else { return 1.0 }
+        return s
+    }
+
+    /// Clamped per-joint reliability weight `w_j in [0.50, 1.00]` from `calibration_v2.jointConfidenceWeights` (§8.3).
+    /// Maps reference side `joint` to the learner's anatomical side when `mirror == true`, falls back to synthesized
+    /// source joints (`CanonicalSkeleton.synthesizedSources`) for `root`/`centerShoulder`/`spine`, and defaults to `1.0`.
+    public static func jointConfidenceWeight(
+        for joint: String,
+        weights: [String: Double],
+        mirror: Bool = false
+    ) -> Double {
+        guard !weights.isEmpty else { return 1.0 }
+        let learnerJoint = mirror ? Retarget.mirrorName(joint) : joint
+        if let raw = weights[learnerJoint], raw.isFinite {
+            return min(1.0, max(0.5, raw))
+        }
+        func clampedSourceMin(_ keys: [String]) -> Double {
+            let vals = keys.compactMap { k -> Double? in
+                guard let v = weights[k], v.isFinite else { return nil }
+                return min(1.0, max(0.5, v))
+            }
+            return vals.min() ?? 1.0
+        }
+        switch learnerJoint {
+        case "root":
+            return clampedSourceMin(["leftHip", "rightHip"])
+        case "centerShoulder":
+            return clampedSourceMin(["leftShoulder", "rightShoulder"])
+        case "spine":
+            return clampedSourceMin(["leftShoulder", "rightShoulder", "leftHip", "rightHip"])
+        default:
+            return 1.0
+        }
+    }
+
+    /// Mean constituent joint reliability weight `w_j` for a `scoreAttempt` shape sub-weight group (§8.3).
+    static func shapeGroupConfidenceWeight(
+        group: String,
+        weights: [String: Double],
+        mirror: Bool
+    ) -> Double {
+        let joints: [String]
+        switch group {
+        case "knees":
+            joints = ["leftKnee", "rightKnee"]
+        case "spine":
+            joints = (weights["spine"] != nil) ? ["spine"] : ["leftShoulder", "rightShoulder", "leftHip", "rightHip"]
+        case "hips":
+            joints = ["leftHip", "rightHip"]
+        case "left_foot":
+            joints = ["leftHeel", "leftFootIndex"]
+        case "right_foot":
+            joints = ["rightHeel", "rightFootIndex"]
+        case "arms":
+            joints = ["leftShoulder", "rightShoulder", "leftElbow", "rightElbow", "leftWrist", "rightWrist"]
+        default:
+            return 1.0
+        }
+        let vals = joints.map { jointConfidenceWeight(for: $0, weights: weights, mirror: mirror) }
+        guard !vals.isEmpty else { return 1.0 }
+        return vals.reduce(0.0, +) / Double(vals.count)
+    }
+
+    /// Maximum torso-frame upper-arm elevation angle in degrees (`0` hanging down along `-e2`, `90` horizontal T-pose,
+    /// `180` straight overhead; matches `CalibrationPoseScorers.shoulderElevationAnglesDeg`, §8.2).
+    public static func maxUpperArmElevationDeg(_ pose: [String: [Double]]) -> Double? {
+        guard let armVecs = torsoFrameArmVectors(pose) else { return nil }
+        var best: Double? = nil
+        for key in ["leftUpperArm", "rightUpperArm"] {
+            guard let u = armVecs[key] else { continue }
+            let elev = acos(min(1.0, max(-1.0, -u.y))) * 180.0 / .pi
+            if let prev = best {
+                best = max(prev, elev)
+            } else {
+                best = elev
+            }
+        }
+        return best
+    }
+
     // MARK: - Windows, velocity and occlusion
 
     /// The windows covering time t (start_s <= t < end_s), in order.
@@ -571,7 +663,8 @@ extension GrooveScoringEngine {
         refFrames: [RawPoseFrame],
         beatTimes: [Double],
         audioLatencyMs: Double,
-        config: HitTimingConfig
+        config: HitTimingConfig,
+        metricScaleFactor: Double = 1.0
     ) -> HitTimingResult {
         guard config.enabled else {
             return HitTimingResult(status: "disabled", hit_score: nil, reference_hit_count: 0, user_hit_count: 0,
@@ -579,7 +672,16 @@ extension GrooveScoringEngine {
         }
         let segCfg = config.segmenterConfig
         let refHits = MoveSegmenter.detectHits(frames: refFrames, config: segCfg)
-        let userHits = MoveSegmenter.detectHits(frames: userFrames, config: segCfg)
+        let scale = sanitizedMetricScale(metricScaleFactor)
+        var userSegCfg = segCfg
+        if scale != 1.0 {
+            // `MoveSegmenter.motionEnergy` divides joint speed by `torsoScale` (`root -> centerShoulder`), so uniform
+            // coordinate scaling cancels (`s / s = 1`); dividing moving/settle thresholds by `scale` scales learner
+            // hit speed by `metricScaleFactor` identically across canonical and torso-less frames (§8.1).
+            userSegCfg.movingThreshold = segCfg.movingThreshold / scale
+            userSegCfg.settleThreshold = segCfg.settleThreshold / scale
+        }
+        let userHits = MoveSegmenter.detectHits(frames: userFrames, config: userSegCfg)
         let latencyS = audioLatencyMs / 1000.0
         let userShifted = userHits.map {
             MoveSegmenter.HitEvent(timestamp: $0.timestamp - latencyS, peakSpeed: $0.peakSpeed, settleDuration: $0.settleDuration)
@@ -682,7 +784,8 @@ extension GrooveScoringEngine {
         tolerances: JointTolerances,
         config: JointToleranceThresholds,
         windows: [ScoringWindow] = [],
-        tolerance: ToleranceConfig = ToleranceConfig()
+        tolerance: ToleranceConfig = ToleranceConfig(),
+        calibrationV2: LearnerCalibrationV2? = nil
     ) -> JointFeedbackResult {
         let emptyCounts = ["ok": 0, "warn": 0, "off": 0]
         guard config.enabled else {
@@ -695,6 +798,8 @@ extension GrooveScoringEngine {
         let occMask = tolerance.occlusion.mask
         let occlusionOn = occMask || occFactor != 1.0
         let occNames = Set(posNames + JointTolerance.defaultAngleTriples.map { $0.name }).sorted()
+        let confWeights = calibrationV2?.jointConfidenceWeights ?? [:]
+        let maxShoulderElevDeg = calibrationV2?.rom?.maxShoulderElevationDeg
         var posErr: [String: [Double]] = [:]
         var posDelta: [String: Vec3] = [:]
         var angErr: [String: [Double]] = [:]
@@ -713,6 +818,14 @@ extension GrooveScoringEngine {
                 ? occludedJoints(names: occNames, refFrames: refFrames, userFrames: userFrames, tRef: bTime, tUsr: tUsr,
                                  refPose: refPose, usrPose: usrPose, mirror: mirror, config: tolerance.occlusion)
                 : []
+            let overheadExceeded: Bool
+            if let maxElev = maxShoulderElevDeg,
+               let refElev = maxUpperArmElevationDeg(refPose),
+               refElev > maxElev {
+                overheadExceeded = true
+            } else {
+                overheadExceeded = false
+            }
             func scale(_ name: String, _ velocity: [String: Double]) -> Double {
                 var s = 1.0
                 for w in active {
@@ -720,6 +833,13 @@ extension GrooveScoringEngine {
                 }
                 if let v = velocity[name] { s *= v }
                 if occluded.contains(name) { s *= occFactor }
+                if overheadExceeded && overheadToleranceJoints.contains(name) {
+                    s *= overheadToleranceFactor
+                }
+                if !confWeights.isEmpty {
+                    let wConf = jointConfidenceWeight(for: name, weights: confWeights, mirror: mirror)
+                    s *= (1.0 / wConf)
+                }
                 return s
             }
 
