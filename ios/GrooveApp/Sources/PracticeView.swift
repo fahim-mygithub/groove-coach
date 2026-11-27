@@ -445,7 +445,7 @@ final class PracticeViewModel: ObservableObject {
         let activeMode = camera.activeCameraMode
         // Camera-frame gravity aligned with `CanonicalSkeleton` axes (`+x` right, `+y` up, `+z` toward lens; §1.2).
         let gravity = cameraGravity
-            ?? profile?.gravity.map { activeMode.cameraFrameGravity(fromDeviceGravity: $0) }
+            ?? profile.map { activeMode.cameraFrameGravity(fromDeviceGravity: $0.gravity) }
             ?? currentCameraGravity(for: activeMode)
         let calibrationFrames = skipped ? nil : profile?.frames
         let scoringCalibrationV2 = coordinator.scoringCalibration(skipped: skipped, outcomeProfileV2: profileV2)
